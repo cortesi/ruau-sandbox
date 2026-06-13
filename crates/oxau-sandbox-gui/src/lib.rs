@@ -10,7 +10,10 @@ use egui::{
     Color32, FontFamily, FontId, Galley, Margin, RichText, TextBuffer, TextEdit, TextFormat,
     TextStyle, Ui, text::LayoutJob,
 };
-use eguidev::{DevMcp, DevUiExt, FixtureSpec, FrameGuard, WidgetRole, WidgetValue};
+use eguidev::{
+    DevMcp, DevUiExt, FixtureSpec, FrameGuard, RoleState, WidgetMeta, WidgetRole, WidgetValue,
+    take_widget_value_override, track_response_full,
+};
 #[cfg(all(not(target_arch = "wasm32"), feature = "devtools"))]
 use eguidev_runtime::attach as attach_runtime;
 use oxau_sandbox::{CheckResult, DEFAULT_SOURCE, Diagnostic, RunResult, Severity, check, execute};
@@ -129,31 +132,44 @@ impl SandboxApp {
     fn show_editor(&self, ui: &mut Ui, state: &mut AppState) {
         ui.vertical(|ui| {
             ui.dev_label("editor.heading", RichText::new("Editor").strong());
+            let mut source_changed = false;
+            if let Some(WidgetValue::Text(source)) = take_widget_value_override(ui, "editor.source")
+            {
+                state.source = source;
+                source_changed = true;
+            }
+
             let mut layouter = |ui: &Ui, text: &dyn TextBuffer, wrap_width: f32| -> Arc<Galley> {
                 let mut job = highlight_rust(text.as_str());
                 job.wrap.max_width = wrap_width;
                 ui.fonts_mut(|fonts| fonts.layout_job(job))
             };
 
-            let response = eguidev::id_with_meta(
-                ui,
+            let response = ui.add(
+                TextEdit::multiline(&mut state.source)
+                    .font(TextStyle::Monospace)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(24)
+                    .code_editor()
+                    .layouter(&mut layouter),
+            );
+            track_response_full(
                 "editor.source",
-                WidgetRole::TextEdit,
-                Some("source".to_string()),
-                Some(WidgetValue::Text(state.source.clone())),
-                |ui| {
-                    ui.add(
-                        TextEdit::multiline(&mut state.source)
-                            .font(TextStyle::Monospace)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(24)
-                            .code_editor()
-                            .layouter(&mut layouter),
-                    )
+                &response,
+                WidgetMeta {
+                    role: WidgetRole::TextEdit,
+                    label: Some("source".to_string()),
+                    value: Some(WidgetValue::Text(state.source.clone())),
+                    role_state: Some(RoleState::TextEdit {
+                        multiline: true,
+                        password: false,
+                    }),
+                    visible: ui.is_visible() && ui.is_rect_visible(response.rect),
+                    ..WidgetMeta::default()
                 },
             );
 
-            if response.changed() {
+            if source_changed || response.changed() {
                 state.refresh_check();
             }
         });
@@ -217,6 +233,33 @@ impl SandboxApp {
             );
         });
     }
+
+    fn show_results_column(&self, ui: &mut Ui, state: &AppState) {
+        let gap = 12.0;
+        let available_height = ui.available_height().max(0.0);
+        let output_min_height = 130.0;
+        let diagnostics_min_height = 150.0;
+        let diagnostics_height =
+            if available_height > diagnostics_min_height + output_min_height + gap {
+                (available_height * 0.58).clamp(
+                    diagnostics_min_height,
+                    available_height - output_min_height - gap,
+                )
+            } else {
+                ((available_height - gap).max(0.0)) * 0.5
+            };
+
+        ui.allocate_ui(egui::vec2(ui.available_width(), diagnostics_height), |ui| {
+            self.show_diagnostics(ui, state);
+        });
+        ui.add_space(gap);
+        ui.allocate_ui(
+            egui::vec2(ui.available_width(), ui.available_height()),
+            |ui| {
+                self.show_output(ui, state);
+            },
+        );
+    }
 }
 
 impl eframe::App for SandboxApp {
@@ -238,11 +281,7 @@ impl eframe::App for SandboxApp {
                 ui.add_space(10.0);
                 ui.columns(2, |columns| {
                     self.show_editor(&mut columns[0], &mut state);
-                    columns[1].vertical(|ui| {
-                        self.show_diagnostics(ui, &state);
-                        ui.add_space(12.0);
-                        self.show_output(ui, &state);
-                    });
+                    self.show_results_column(&mut columns[1], &state);
                 });
             });
     }
@@ -522,5 +561,27 @@ mod theme {
         style.visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
         style.visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
         ctx.set_global_style(style);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{highlight_rust, theme};
+
+    #[test]
+    fn syntax_highlighting_classifies_rust_tokens() {
+        let job =
+            highlight_rust("fn main() {\n    let n = 42;\n    println!(\"{n}\"); // output\n}");
+        let colors = job
+            .sections
+            .iter()
+            .map(|section| section.format.color)
+            .collect::<Vec<_>>();
+
+        assert!(colors.contains(&theme::KEYWORD));
+        assert!(colors.contains(&theme::NUMBER));
+        assert!(colors.contains(&theme::STRING));
+        assert!(colors.contains(&theme::MACRO));
+        assert!(colors.contains(&theme::COMMENT));
     }
 }
