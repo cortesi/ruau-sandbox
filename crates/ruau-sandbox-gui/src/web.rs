@@ -1,4 +1,4 @@
-//! Web entrypoint for the Oxau sandbox GUI.
+//! Web entrypoint for the Ruau sandbox GUI.
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
@@ -17,8 +17,8 @@ pub async fn run() {
         .and_then(|window| window.document())
         .expect("document not available");
     let canvas = document
-        .get_element_by_id("oxau-sandbox")
-        .expect("canvas with id 'oxau-sandbox' not found")
+        .get_element_by_id("ruau-sandbox")
+        .expect("canvas with id 'ruau-sandbox' not found")
         .dyn_into::<HtmlCanvasElement>()
         .expect("element is not a canvas");
 
@@ -26,7 +26,7 @@ pub async fn run() {
         .start(
             canvas,
             eframe::WebOptions::default(),
-            Box::new(|cc| Ok(Box::new(oxau_sandbox_gui::SandboxApp::new(cc)))),
+            Box::new(|cc| Ok(Box::new(ruau_sandbox_gui::SandboxApp::new(cc)))),
         )
         .await
         .expect("failed to start eframe web app");

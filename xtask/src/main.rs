@@ -74,14 +74,14 @@ impl RepoPaths {
             dist: root.join("dist"),
             dev_index_html: root
                 .join("crates")
-                .join("oxau-sandbox-gui")
+                .join("ruau-sandbox-gui")
                 .join("assets")
                 .join("index.html"),
             raw_wasm: root
                 .join("target")
                 .join("wasm32-unknown-unknown")
                 .join("wasm-release")
-                .join("oxau-sandbox-web.wasm"),
+                .join("ruau-sandbox-web.wasm"),
             root,
         })
     }
@@ -173,7 +173,7 @@ fn web_serve(paths: &RepoPaths) -> Result<()> {
     );
     cmd!(
         sh,
-        "cargo run --target wasm32-unknown-unknown --bin oxau-sandbox-web"
+        "cargo run --target wasm32-unknown-unknown --bin ruau-sandbox-web"
     )
     .run()?;
     Ok(())
@@ -183,7 +183,7 @@ fn web_build(paths: &RepoPaths) -> Result<()> {
     let sh = repo_shell(paths)?;
     cmd!(
         sh,
-        "cargo build --target wasm32-unknown-unknown --bin oxau-sandbox-web --profile wasm-release"
+        "cargo build --target wasm32-unknown-unknown --bin ruau-sandbox-web --profile wasm-release"
     )
     .run()?;
 
@@ -241,14 +241,14 @@ fn wasm_bindgen(paths: &RepoPaths) -> Result<()> {
     let raw_wasm = &paths.raw_wasm;
     cmd!(
         sh,
-        "wasm-bindgen --target web --no-typescript --out-dir {dist} --out-name oxau-sandbox-web {raw_wasm}"
+        "wasm-bindgen --target web --no-typescript --out-dir {dist} --out-name ruau-sandbox-web {raw_wasm}"
     )
     .run()?;
     Ok(())
 }
 
 fn optimize_wasm(paths: &RepoPaths) -> Result<()> {
-    let bg_wasm = paths.dist.join("oxau-sandbox-web_bg.wasm");
+    let bg_wasm = paths.dist.join("ruau-sandbox-web_bg.wasm");
     if bg_wasm.is_file() && has_command("wasm-opt")? {
         let sh = repo_shell(paths)?;
         cmd!(sh, "wasm-opt -Oz -o {bg_wasm} {bg_wasm}").run()?;
@@ -257,7 +257,7 @@ fn optimize_wasm(paths: &RepoPaths) -> Result<()> {
 }
 
 fn emit_fallback_bundle(paths: &RepoPaths) -> Result<()> {
-    let raw_out = paths.dist.join("oxau-sandbox-web.wasm");
+    let raw_out = paths.dist.join("ruau-sandbox-web.wasm");
     fs::copy(&paths.raw_wasm, raw_out).context("failed to copy raw wasm artifact")?;
     write_dist_index(paths, fallback_index_html())?;
     Ok(())
@@ -347,17 +347,17 @@ fn production_index_html() -> &'static str {
 <html>
 <head>
     <meta charset="utf-8">
-    <title>Oxau Sandbox</title>
+    <title>Ruau Sandbox</title>
     <style>
         html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #101218; }
         canvas { display: block; width: 100vw; height: 100vh; }
     </style>
 </head>
 <body>
-    <canvas id="oxau-sandbox"></canvas>
+    <canvas id="ruau-sandbox"></canvas>
     <script type="module">
-        import init from './oxau-sandbox-web.js';
-        init('./oxau-sandbox-web_bg.wasm');
+        import init from './ruau-sandbox-web.js';
+        init('./ruau-sandbox-web_bg.wasm');
     </script>
 </body>
 </html>
@@ -367,7 +367,7 @@ fn production_index_html() -> &'static str {
 fn fallback_index_html() -> &'static str {
     r#"<!DOCTYPE html>
 <html>
-<head><meta charset="utf-8"><title>Oxau Sandbox</title></head>
+<head><meta charset="utf-8"><title>Ruau Sandbox</title></head>
 <body>
     <p>This fallback bundle needs wasm-bindgen output. Install wasm-bindgen-cli and rebuild.</p>
 </body>

@@ -1,25 +1,57 @@
-//! egui frontend for the Oxau sandbox.
+//! egui frontend for the Ruau sandbox.
 
 #![allow(clippy::missing_docs_in_private_items)]
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::env;
 use std::sync::{Arc, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
+use std::{fs, path::PathBuf};
 
+#[cfg(not(target_arch = "wasm32"))]
+use anyhow::Context;
+#[cfg(not(target_arch = "wasm32"))]
+use clap::Parser;
 use egui::{
-    Color32, FontFamily, FontId, Galley, Margin, RichText, TextBuffer, TextEdit, TextFormat,
-    TextStyle, Ui, text::LayoutJob,
+    Color32, CursorIcon, FontFamily, FontId, Galley, Margin, Rect, RichText, Sense, TextBuffer,
+    TextEdit, TextFormat, TextStyle, Ui, UiBuilder, text::LayoutJob,
 };
 use eguidev::{
-    DevMcp, DevUiExt, FixtureSpec, FrameGuard, RoleState, WidgetMeta, WidgetRole, WidgetValue,
-    take_widget_value_override, track_response_full,
+    DevMcp, DevUiExt, FixtureSpec, FrameGuard, RoleState, ScrollAreaState, WidgetMeta, WidgetRole,
+    WidgetValue, capture_layout, take_widget_value_override, track_response_full,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "devtools"))]
 use eguidev_runtime::attach as attach_runtime;
-use oxau_sandbox::{CheckResult, DEFAULT_SOURCE, Diagnostic, RunResult, Severity, check, execute};
+use ruau_sandbox::{CheckResult, DEFAULT_SOURCE, Diagnostic, RunResult, Severity, check, execute};
 
 /// Native window title.
-pub const APP_TITLE: &str = "Oxau Sandbox";
+pub const APP_TITLE: &str = "Ruau Sandbox";
+
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Debug, Parser)]
+#[command(
+    name = "ruau-sandbox-gui",
+    version,
+    about = "Edit, check, and run Rust-like sandbox scripts."
+)]
+struct NativeArgs {
+    /// Enable the embedded eguidev MCP runtime.
+    #[arg(long = "dev-mcp")]
+    enable_mcp: bool,
+    /// Script file to load into the editor on startup.
+    script: Option<PathBuf>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl NativeArgs {
+    fn load_source(&self) -> anyhow::Result<Option<String>> {
+        self.script
+            .as_ref()
+            .map(|path| {
+                fs::read_to_string(path)
+                    .with_context(|| format!("failed to read script {}", path.display()))
+            })
+            .transpose()
+    }
+}
 
 /// Mutable app state shared with eguidev fixtures.
 #[derive(Debug)]
@@ -30,21 +62,32 @@ pub struct AppState {
     pub check_result: CheckResult,
     /// Last run result.
     pub run_result: RunResult,
+    run_history: Vec<RunRecord>,
+    next_run_number: usize,
+    editor_scroll: ScrollAreaState,
+    output_scroll: ScrollAreaState,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        let source = DEFAULT_SOURCE.to_string();
+        Self::with_source(DEFAULT_SOURCE.to_string())
+    }
+}
+
+impl AppState {
+    fn with_source(source: String) -> Self {
         let check_result = check(&source);
         Self {
             source,
             check_result,
             run_result: RunResult::default(),
+            run_history: Vec::new(),
+            next_run_number: 1,
+            editor_scroll: ScrollAreaState::default(),
+            output_scroll: ScrollAreaState::default(),
         }
     }
-}
 
-impl AppState {
     fn reset(&mut self) {
         *self = Self::default();
     }
@@ -52,7 +95,7 @@ impl AppState {
     fn replace_with_error_sample(&mut self) {
         self.source = "fn main() {\n    let width: i64 = 6;\n    println!(height);\n}".to_string();
         self.check_result = check(&self.source);
-        self.run_result = RunResult::default();
+        self.clear_runs();
     }
 
     fn refresh_check(&mut self) {
@@ -64,6 +107,74 @@ impl AppState {
         self.check_result = CheckResult {
             diagnostics: self.run_result.diagnostics.clone(),
         };
+        self.run_history.push(RunRecord {
+            number: self.next_run_number,
+            result: self.run_result.clone(),
+        });
+        self.next_run_number += 1;
+    }
+
+    fn clear_runs(&mut self) {
+        self.run_result = RunResult::default();
+        self.run_history.clear();
+        self.next_run_number = 1;
+        self.editor_scroll.reset();
+        self.output_scroll.reset();
+    }
+
+    fn output_history_text(&self) -> String {
+        if self.run_history.is_empty() {
+            return "Run the program to see output.".to_string();
+        }
+
+        self.run_history
+            .iter()
+            .map(RunRecord::display_text)
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+}
+
+/// A rendered script execution kept in the output history.
+#[derive(Debug, Clone)]
+struct RunRecord {
+    number: usize,
+    result: RunResult,
+}
+
+impl RunRecord {
+    fn display_text(&self) -> String {
+        let mut text = format!(
+            "Run {} - {}",
+            self.number,
+            if self.result.is_ok() { "ok" } else { "failed" }
+        );
+
+        if self.result.output.is_empty() {
+            if self.result.is_ok() {
+                text.push_str("\nProgram produced no output.");
+            } else {
+                text.push_str("\nRun failed. Fix diagnostics and try again.");
+            }
+        } else {
+            text.push('\n');
+            text.push_str(self.result.output.trim_end());
+        }
+
+        if !self.result.diagnostics.is_empty() {
+            text.push_str("\nDiagnostics:");
+            for diagnostic in &self.result.diagnostics {
+                text.push_str(&format!(
+                    "\n{}:{}: {}",
+                    diagnostic.span.line, diagnostic.span.column, diagnostic.message
+                ));
+                if let Some(help) = &diagnostic.help {
+                    text.push_str(&format!("\n  help: {help}"));
+                }
+            }
+        }
+
+        text
     }
 }
 
@@ -71,6 +182,8 @@ impl AppState {
 pub struct SandboxApp {
     devmcp: DevMcp,
     state: Arc<Mutex<AppState>>,
+    split_ratio: f32,
+    split_drag_start_width: Option<f32>,
 }
 
 impl SandboxApp {
@@ -81,17 +194,25 @@ impl SandboxApp {
         Self {
             devmcp: build_devmcp(false, &state),
             state,
+            split_ratio: DEFAULT_SPLIT_RATIO,
+            split_drag_start_width: None,
         }
     }
 
     /// Construct a new sandbox application with native automation enabled.
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
-    pub fn with_devtools(_cc: &eframe::CreationContext<'_>, enable_mcp: bool) -> Self {
-        let state = Arc::new(Mutex::new(AppState::default()));
+    pub fn with_devtools(
+        _cc: &eframe::CreationContext<'_>,
+        enable_mcp: bool,
+        initial_source: String,
+    ) -> Self {
+        let state = Arc::new(Mutex::new(AppState::with_source(initial_source)));
         Self {
             devmcp: build_devmcp(enable_mcp, &state),
             state,
+            split_ratio: DEFAULT_SPLIT_RATIO,
+            split_drag_start_width: None,
         }
     }
 
@@ -145,29 +266,48 @@ impl SandboxApp {
                 ui.fonts_mut(|fonts| fonts.layout_job(job))
             };
 
-            let response = ui.add(
-                TextEdit::multiline(&mut state.source)
-                    .font(TextStyle::Monospace)
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(24)
-                    .code_editor()
-                    .layouter(&mut layouter),
-            );
-            track_response_full(
-                "editor.source",
-                &response,
-                WidgetMeta {
-                    role: WidgetRole::TextEdit,
-                    label: Some("source".to_string()),
-                    value: Some(WidgetValue::Text(state.source.clone())),
-                    role_state: Some(RoleState::TextEdit {
-                        multiline: true,
-                        password: false,
-                    }),
-                    visible: ui.is_visible() && ui.is_rect_visible(response.rect),
-                    ..WidgetMeta::default()
-                },
-            );
+            let editor_height = ui.available_height().max(0.0);
+            let response = state
+                .editor_scroll
+                .show_viewport(
+                    egui::ScrollArea::vertical()
+                        .id_salt("editor.scroll")
+                        .auto_shrink([false, false])
+                        .max_height(editor_height)
+                        .min_scrolled_height(editor_height),
+                    ui,
+                    "editor.scroll",
+                    |ui, viewport| {
+                        ui.set_min_width(ui.available_width());
+                        let response = ui.add_sized(
+                            [ui.available_width(), viewport.height()],
+                            TextEdit::multiline(&mut state.source)
+                                .font(TextStyle::Monospace)
+                                .desired_width(f32::INFINITY)
+                                .desired_rows(1)
+                                .code_editor()
+                                .layouter(&mut layouter),
+                        );
+                        track_response_full(
+                            "editor.source",
+                            &response,
+                            WidgetMeta {
+                                role: WidgetRole::TextEdit,
+                                label: Some("source".to_string()),
+                                value: Some(WidgetValue::Text(state.source.clone())),
+                                role_state: Some(RoleState::TextEdit {
+                                    multiline: true,
+                                    password: false,
+                                }),
+                                layout: Some(capture_layout(ui, &response)),
+                                visible: ui.is_visible() && ui.is_rect_visible(response.rect),
+                                ..WidgetMeta::default()
+                            },
+                        );
+                        response
+                    },
+                )
+                .inner;
 
             if source_changed || response.changed() {
                 state.refresh_check();
@@ -197,44 +337,27 @@ impl SandboxApp {
         });
     }
 
-    fn show_output(&self, ui: &mut Ui, state: &AppState) {
+    fn show_output(&self, ui: &mut Ui, state: &mut AppState) {
         ui.vertical(|ui| {
             ui.dev_label("output.heading", RichText::new("Output").strong());
-            let output = if !state.run_result.is_ok() {
-                "Run failed. Fix diagnostics and try again.".to_string()
-            } else if state.run_result.output.is_empty() {
-                "Run the program to see output.".to_string()
-            } else {
-                state.run_result.output.clone()
-            };
-            eguidev::id_with_meta(
-                ui,
-                "output.text",
-                WidgetRole::Label,
-                Some("output".to_string()),
-                Some(WidgetValue::Text(output.clone())),
-                |ui| {
+            ui.add_space(6.0);
+
+            let body_size = ui.available_size();
+            ui.allocate_ui(body_size, |ui| {
+                eguidev::container(ui, "output.panel", |ui| {
                     egui::Frame::new()
                         .fill(theme::PANEL)
                         .inner_margin(Margin::same(10))
                         .show(ui, |ui| {
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(output)
-                                        .monospace()
-                                        .color(theme::TEXT)
-                                        .size(13.0),
-                                )
-                                .wrap(),
-                            )
-                        })
-                        .inner
-                },
-            );
+                            let output = state.output_history_text();
+                            show_output_history(ui, state, output);
+                        });
+                });
+            });
         });
     }
 
-    fn show_results_column(&self, ui: &mut Ui, state: &AppState) {
+    fn show_results_column(&self, ui: &mut Ui, state: &mut AppState) {
         let gap = 12.0;
         let available_height = ui.available_height().max(0.0);
         let output_min_height = 130.0;
@@ -260,6 +383,180 @@ impl SandboxApp {
             },
         );
     }
+
+    fn show_workspace(&mut self, ui: &mut Ui, state: &mut AppState) {
+        let (_id, rect) = ui.allocate_space(ui.available_size());
+        if rect.width() <= 1.0 || rect.height() <= 1.0 {
+            return;
+        }
+
+        let layout = SplitLayout::new(rect, self.split_ratio);
+        self.show_split_divider(ui, &layout);
+
+        ui.scope_builder(
+            UiBuilder::new()
+                .max_rect(layout.left_rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| {
+                eguidev::container(ui, "layout.left_pane", |ui| {
+                    self.show_editor(ui, state);
+                });
+            },
+        );
+        ui.scope_builder(
+            UiBuilder::new()
+                .max_rect(layout.right_rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| {
+                eguidev::container(ui, "layout.right_pane", |ui| {
+                    self.show_results_column(ui, state);
+                });
+            },
+        );
+    }
+
+    fn show_split_divider(&mut self, ui: &Ui, layout: &SplitLayout) {
+        let response = ui
+            .interact(
+                layout.divider_rect,
+                ui.id().with("layout.divider"),
+                Sense::drag(),
+            )
+            .on_hover_and_drag_cursor(CursorIcon::ResizeHorizontal);
+        if response.drag_started() {
+            self.split_drag_start_width = Some(layout.left_width);
+        }
+        if response.dragged() {
+            let start_width = self.split_drag_start_width.unwrap_or(layout.left_width);
+            let delta_x = response
+                .total_drag_delta()
+                .unwrap_or_else(|| response.drag_delta())
+                .x;
+            self.split_ratio = layout.ratio_for_left_width(start_width + delta_x);
+            ui.ctx().request_repaint();
+        }
+        if response.drag_stopped() {
+            self.split_drag_start_width = None;
+        }
+
+        let color = if response.dragged() || response.hovered() {
+            theme::ACCENT
+        } else {
+            theme::DIVIDER
+        };
+        let line = Rect::from_center_size(
+            layout.divider_rect.center(),
+            egui::vec2(1.0, layout.divider_rect.height()),
+        );
+        ui.painter()
+            .rect_filled(layout.divider_rect, 0.0, theme::BACKGROUND);
+        ui.painter()
+            .rect_filled(line, 0.0, color.gamma_multiply(0.8));
+        track_response_full(
+            "layout.divider",
+            &response,
+            WidgetMeta {
+                role: WidgetRole::Separator,
+                label: Some("pane divider".to_string()),
+                layout: Some(capture_layout(ui, &response)),
+                visible: ui.is_visible() && ui.is_rect_visible(response.rect),
+                ..WidgetMeta::default()
+            },
+        );
+    }
+}
+
+const DEFAULT_SPLIT_RATIO: f32 = 0.5;
+const DIVIDER_WIDTH: f32 = 8.0;
+const MIN_LEFT_PANE_WIDTH: f32 = 260.0;
+const MIN_RIGHT_PANE_WIDTH: f32 = 300.0;
+
+#[derive(Debug, Clone, Copy)]
+struct SplitLayout {
+    left_rect: Rect,
+    divider_rect: Rect,
+    right_rect: Rect,
+    content_width: f32,
+    left_width: f32,
+    min_left: f32,
+    max_left: f32,
+}
+
+impl SplitLayout {
+    fn new(rect: Rect, ratio: f32) -> Self {
+        let divider_width = DIVIDER_WIDTH.min(rect.width()).max(0.0);
+        let content_width = (rect.width() - divider_width).max(0.0);
+        let min_left = MIN_LEFT_PANE_WIDTH.min(content_width * 0.5);
+        let min_right = MIN_RIGHT_PANE_WIDTH.min((content_width - min_left).max(0.0));
+        let max_left = (content_width - min_right).max(min_left);
+        let left_width = (content_width * ratio.clamp(0.0, 1.0)).clamp(min_left, max_left);
+        let divider_min_x = rect.min.x + left_width;
+        let divider_max_x = divider_min_x + divider_width;
+        let left_rect = Rect::from_min_max(rect.min, egui::pos2(divider_min_x, rect.max.y));
+        let divider_rect = Rect::from_min_max(
+            egui::pos2(divider_min_x, rect.min.y),
+            egui::pos2(divider_max_x, rect.max.y),
+        );
+        let right_rect = Rect::from_min_max(egui::pos2(divider_max_x, rect.min.y), rect.max);
+
+        Self {
+            left_rect,
+            divider_rect,
+            right_rect,
+            content_width,
+            left_width,
+            min_left,
+            max_left,
+        }
+    }
+
+    fn ratio_for_left_width(self, left_width: f32) -> f32 {
+        if self.content_width <= 0.0 {
+            return DEFAULT_SPLIT_RATIO;
+        }
+        (left_width.clamp(self.min_left, self.max_left) / self.content_width).clamp(0.0, 1.0)
+    }
+}
+
+fn show_output_history(ui: &mut Ui, state: &mut AppState, output: String) {
+    let scroll_height = ui.available_height().max(0.0);
+    state.output_scroll.show(
+        egui::ScrollArea::vertical()
+            .id_salt("output.history.scroll")
+            .auto_shrink([false, false])
+            .stick_to_bottom(true)
+            .max_height(scroll_height)
+            .min_scrolled_height(scroll_height),
+        ui,
+        "output.history",
+        |ui| {
+            ui.set_min_width(ui.available_width());
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                show_output_text(ui, output);
+            });
+        },
+    );
+}
+
+fn show_output_text(ui: &mut Ui, output: String) -> egui::Response {
+    eguidev::id_with_meta(
+        ui,
+        "output.text",
+        WidgetRole::Label,
+        Some("output".to_string()),
+        Some(WidgetValue::Text(output.clone())),
+        |ui| {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(output)
+                        .monospace()
+                        .color(theme::TEXT)
+                        .size(13.0),
+                )
+                .wrap(),
+            )
+        },
+    )
 }
 
 impl eframe::App for SandboxApp {
@@ -276,13 +573,11 @@ impl eframe::App for SandboxApp {
             .fill(theme::BACKGROUND)
             .inner_margin(Margin::same(14))
             .show(ui, |ui| {
-                let mut state = self.state.lock().expect("app state lock");
+                let state = Arc::clone(&self.state);
+                let mut state = state.lock().expect("app state lock");
                 self.show_top_bar(ui, &mut state);
                 ui.add_space(10.0);
-                ui.columns(2, |columns| {
-                    self.show_editor(&mut columns[0], &mut state);
-                    self.show_results_column(&mut columns[1], &state);
-                });
+                self.show_workspace(ui, &mut state);
             });
     }
 
@@ -294,8 +589,12 @@ impl eframe::App for SandboxApp {
 /// Run the native sandbox application.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn run_native() -> anyhow::Result<()> {
-    let enable_mcp = env::args().any(|arg| arg == "--dev-mcp");
+    let args = NativeArgs::parse();
+    let enable_mcp = args.enable_mcp;
     validate_devtools(enable_mcp)?;
+    let initial_source = args
+        .load_source()?
+        .unwrap_or_else(|| DEFAULT_SOURCE.to_string());
 
     let native_options = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
@@ -308,7 +607,13 @@ pub fn run_native() -> anyhow::Result<()> {
     eframe::run_native(
         APP_TITLE,
         native_options,
-        Box::new(move |cc| Ok(Box::new(SandboxApp::with_devtools(cc, enable_mcp)))),
+        Box::new(move |cc| {
+            Ok(Box::new(SandboxApp::with_devtools(
+                cc,
+                enable_mcp,
+                initial_source,
+            )))
+        }),
     )
     .map_err(|err| anyhow::anyhow!(err.to_string()))
 }
@@ -538,6 +843,7 @@ mod theme {
     pub const TEXT: Color32 = Color32::from_rgb(0xea, 0xed, 0xf3);
     pub const MUTED: Color32 = Color32::from_rgb(0xa8, 0xb1, 0xc2);
     pub const ACCENT: Color32 = Color32::from_rgb(0x67, 0xd8, 0xef);
+    pub const DIVIDER: Color32 = Color32::from_rgb(0x3a, 0x44, 0x52);
     pub const GOOD: Color32 = Color32::from_rgb(0x6d, 0xdb, 0x8b);
     pub const WARN: Color32 = Color32::from_rgb(0xf2, 0xc4, 0x66);
     pub const BAD: Color32 = Color32::from_rgb(0xff, 0x7a, 0x7a);
@@ -566,7 +872,15 @@ mod theme {
 
 #[cfg(test)]
 mod tests {
-    use super::{highlight_rust, theme};
+    #[cfg(not(target_arch = "wasm32"))]
+    use std::{env, fs, path::Path, process};
+
+    #[cfg(not(target_arch = "wasm32"))]
+    use clap::Parser;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    use super::NativeArgs;
+    use super::{AppState, highlight_rust, theme};
 
     #[test]
     fn syntax_highlighting_classifies_rust_tokens() {
@@ -583,5 +897,39 @@ mod tests {
         assert!(colors.contains(&theme::STRING));
         assert!(colors.contains(&theme::MACRO));
         assert!(colors.contains(&theme::COMMENT));
+    }
+
+    #[test]
+    fn app_state_checks_initial_source() {
+        let state = AppState::with_source("fn main() {\n    println!(missing);\n}".to_string());
+
+        assert!(!state.check_result.is_ok());
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_args_parse_optional_script() {
+        let args = NativeArgs::parse_from(["ruau-sandbox-gui", "--dev-mcp", "sample.rs"]);
+
+        assert!(args.enable_mcp);
+        assert_eq!(args.script.as_deref(), Some(Path::new("sample.rs")));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_args_load_source_from_script() -> anyhow::Result<()> {
+        let source = "fn main() {\n    println!(\"loaded\");\n}\n";
+        let path = env::temp_dir().join(format!("ruau-sandbox-script-load-{}.rs", process::id()));
+        fs::write(&path, source)?;
+
+        let args = NativeArgs {
+            enable_mcp: false,
+            script: Some(path.clone()),
+        };
+        let loaded_source = args.load_source()?;
+        fs::remove_file(path)?;
+
+        assert_eq!(loaded_source.as_deref(), Some(source));
+        Ok(())
     }
 }

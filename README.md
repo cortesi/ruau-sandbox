@@ -1,6 +1,6 @@
-# Oxau Sandbox
+# Ruau Sandbox
 
-Oxau Sandbox is a small egui application for editing, checking, and running
+Ruau Sandbox is a small egui application for editing, checking, and running
 Rust-like snippets. It is intentionally built around a shared core so native and
 wasm builds use the same diagnostics and execution behavior.
 
@@ -8,6 +8,7 @@ wasm builds use the same diagnostics and execution behavior.
 
 ```sh
 cargo run
+cargo run -- path/to/script.rs
 ```
 
 ## Build Web

@@ -1405,7 +1405,7 @@ dependencies = [
  "eguidev",
  "glob",
  "image",
- "oxau",
+ "ruau",
  "schemars",
  "serde",
  "serde_json",
@@ -3360,94 +3360,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oxau"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "oxau-ast",
- "oxau-bytecode",
- "oxau-decl",
- "oxau-source",
- "oxau-vm",
- "oxau-vm-api",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "oxau-ast"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "strum",
-]
-
-[[package]]
-name = "oxau-bytecode"
-version = "0.1.0"
-dependencies = [
- "oxau-ast",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "oxau-decl"
-version = "0.1.0"
-
-[[package]]
-name = "oxau-sandbox"
-version = "0.1.0"
-
-[[package]]
-name = "oxau-sandbox-gui"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "console_error_panic_hook",
- "eframe",
- "egui",
- "eguidev",
- "eguidev_runtime",
- "oxau-sandbox",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "web-sys",
-]
-
-[[package]]
-name = "oxau-source"
-version = "0.1.0"
-
-[[package]]
-name = "oxau-vm"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "blake3",
- "foldhash 0.2.0",
- "oxau-bytecode",
- "oxau-decl",
- "oxau-source",
- "oxau-vm-api",
- "serde",
- "stacker",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "oxau-vm-api"
-version = "0.1.0"
-dependencies = [
- "oxau-decl",
- "serde",
-]
-
-[[package]]
 name = "p256"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4124,6 +4036,95 @@ dependencies = [
  "spki",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "ruau"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ruau-ast",
+ "ruau-bytecode",
+ "ruau-decl",
+ "ruau-source",
+ "ruau-vm",
+ "ruau-vm-api",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "ruau-ast"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "strum",
+]
+
+[[package]]
+name = "ruau-bytecode"
+version = "0.1.0"
+dependencies = [
+ "ruau-ast",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "ruau-decl"
+version = "0.1.0"
+
+[[package]]
+name = "ruau-sandbox"
+version = "0.1.0"
+
+[[package]]
+name = "ruau-sandbox-gui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "console_error_panic_hook",
+ "eframe",
+ "egui",
+ "eguidev",
+ "eguidev_runtime",
+ "ruau-sandbox",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
+name = "ruau-source"
+version = "0.1.0"
+
+[[package]]
+name = "ruau-vm"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "blake3",
+ "foldhash 0.2.0",
+ "ruau-bytecode",
+ "ruau-decl",
+ "ruau-source",
+ "ruau-vm-api",
+ "serde",
+ "stacker",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "ruau-vm-api"
+version = "0.1.0"
+dependencies = [
+ "ruau-decl",
+ "serde",
 ]
 
 [[package]]

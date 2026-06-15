@@ -5,7 +5,7 @@ command = [
   "run",
   "--quiet",
   "-p",
-  "oxau-sandbox-gui",
+  "ruau-sandbox-gui",
   "--features",
   "devtools",
   "--",

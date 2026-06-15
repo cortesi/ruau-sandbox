@@ -1,4 +1,4 @@
-//! Shared checker and executor for the Oxau sandbox UI.
+//! Shared checker and executor for the Ruau sandbox UI.
 //!
 //! The first engine is intentionally small and deterministic: it accepts a
 //! Rust-shaped subset that can run in native and wasm builds without a compiler

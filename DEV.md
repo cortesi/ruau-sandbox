@@ -4,12 +4,14 @@
 
 ```sh
 cargo run
+cargo run -- path/to/script.rs
 ```
 
 To expose the eguidev runtime:
 
 ```sh
-cargo run -p oxau-sandbox-gui --features devtools -- --dev-mcp
+cargo run -p ruau-sandbox-gui --features devtools -- --dev-mcp
+cargo run -p ruau-sandbox-gui --features devtools -- --dev-mcp path/to/script.rs
 ```
 
 ## Web
