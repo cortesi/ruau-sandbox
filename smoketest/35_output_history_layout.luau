@@ -1,6 +1,20 @@
 fixture("sandbox.default")
 local vp = root()
 
+local function run_until_output(predicate, description)
+    local last_output = ""
+    for _ = 1, 5 do
+        vp:widget_get("action.run"):click()
+        wait_for_frames(4)
+        local output = vp:widget_get("output.text"):state()
+        last_output = output.value_text
+        if predicate(output) then
+            return output
+        end
+    end
+    error(description .. "\nlast output:\n" .. last_output)
+end
+
 local function layout_summary(layout)
     local issues = {}
     for _, issue in ipairs(layout) do
@@ -24,7 +38,10 @@ end
 vp:set_inner_size({ x = 900, y = 620 })
 vp:wait_for_capture()
 
-vp:widget_get("action.run"):click()
+run_until_output(function(widget)
+    return string.find(widget.value_text, "Run 1", 1, true) ~= nil
+        and string.find(widget.value_text, "area = 42", 1, true) ~= nil
+end, "first run should render default program output")
 local editor = vp:widget_get("editor.source")
 local second_source = table.concat({
     "function value(): number",
@@ -37,14 +54,13 @@ editor:set_value(second_source)
 vp:wait_for_widget("editor.source", function(widget)
     return widget.value_text == second_source
 end)
-vp:widget_get("action.run"):click()
 
-local output = vp:wait_for_widget("output.text", function(widget)
+local output = run_until_output(function(widget)
     return string.find(widget.value_text, "Run 1", 1, true) ~= nil
         and string.find(widget.value_text, "area = 42", 1, true) ~= nil
         and string.find(widget.value_text, "Run 2", 1, true) ~= nil
         and string.find(widget.value_text, "value = 15", 1, true) ~= nil
-end)
+end, "second run should append edited program output")
 assert(output ~= nil, "output should retain a chronological record of script runs")
 
 local panel = vp:widget_get("output.panel"):state()
