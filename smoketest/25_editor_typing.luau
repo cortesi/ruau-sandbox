@@ -1,7 +1,13 @@
 fixture("sandbox.default")
 local vp = root()
 
-local typed_source = "fn main() {\n    let typed = 9;\n    println!(\"typed = {}\", typed);\n}"
+local typed_source = table.concat({
+    "function typed_value(): number",
+    "    return 9",
+    "end",
+    "",
+    "print(\"typed = \" .. typed_value())",
+}, "\n")
 local editor = vp:widget_get("editor.source")
 editor:type_text(typed_source, { clear = true })
 
@@ -10,8 +16,8 @@ local edited = vp:wait_for_widget("editor.source", function(widget)
 end)
 assert(edited.value_text == typed_source, "editor should accept typed replacement text")
 assert(
-    string.find(edited.value_text, "\n    println!", 1, true) ~= nil,
-    "typed editor content should preserve indentation"
+    string.find(edited.value_text, "function typed_value", 1, true) ~= nil,
+    "typed editor content should preserve top-level Luau function declarations"
 )
 
 vp:widget_get("action.run"):click()

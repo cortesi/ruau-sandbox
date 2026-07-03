@@ -3,7 +3,7 @@ authors = ["Aldo Cortesi <aldo@corte.si>"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
-description = "A wasm-capable Ruau sandbox for editing, checking, and running Rust-like snippets."
+description = "A wasm-capable Ruau sandbox for editing, checking, and running Luau snippets."
 
 [workspace]
 resolver = "2"

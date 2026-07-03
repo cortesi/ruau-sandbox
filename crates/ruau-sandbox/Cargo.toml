@@ -8,3 +8,6 @@ description.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+ruau = { path = "/Users/cortesi/git/private/ruau/crates/ruau", default-features = false }

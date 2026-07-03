@@ -2,7 +2,10 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
-use std::sync::{Arc, Mutex};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 #[cfg(not(target_arch = "wasm32"))]
 use std::{fs, path::PathBuf};
 
@@ -11,26 +14,45 @@ use anyhow::Context;
 #[cfg(not(target_arch = "wasm32"))]
 use clap::Parser;
 use egui::{
-    Color32, CursorIcon, FontFamily, FontId, Galley, Margin, Rect, RichText, Sense, TextBuffer,
-    TextEdit, TextFormat, TextStyle, Ui, UiBuilder, text::LayoutJob,
+    CursorIcon, FontFamily, FontId, Galley, Key, KeyboardShortcut, Margin, Modifiers, Rect,
+    RichText, Sense, Stroke, TextBuffer, TextEdit, TextStyle, Ui, UiBuilder,
+    text_edit::TextEditOutput,
 };
 use eguidev::{
-    DevMcp, DevUiExt, FixtureSpec, FrameGuard, RoleState, ScrollAreaState, WidgetMeta, WidgetRole,
-    WidgetValue, capture_layout, take_widget_value_override, track_response_full,
+    DevMcp, DevUiExt, FixtureSpec, FrameGuard, RoleState, WidgetMeta, WidgetRole, WidgetValue,
+    capture_layout, take_widget_value_override, track_response_full,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "devtools"))]
 use eguidev_runtime::attach as attach_runtime;
-use ruau_sandbox::{CheckResult, DEFAULT_SOURCE, Diagnostic, RunResult, Severity, check, execute};
+#[cfg(not(target_arch = "wasm32"))]
+use ruau_sandbox::DEFAULT_SOURCE;
+use ruau_sandbox::{CheckResult, Diagnostic, SAMPLES, Severity, sample_by_name};
+
+mod state;
+mod syntax;
+mod theme;
+
+pub use state::AppState;
+use syntax::{LineMark, collect_line_marks, highlight_source};
+
+/// Keyboard shortcut that runs the current program.
+const RUN_SHORTCUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
 
 /// Native window title.
 pub const APP_TITLE: &str = "Ruau Sandbox";
+
+const DEFAULT_SPLIT_RATIO: f32 = 0.5;
+const DIVIDER_WIDTH: f32 = 8.0;
+const MIN_LEFT_PANE_WIDTH: f32 = 260.0;
+const MIN_RIGHT_PANE_WIDTH: f32 = 300.0;
+const GUTTER_PADDING: f32 = 10.0;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Parser)]
 #[command(
     name = "ruau-sandbox-gui",
     version,
-    about = "Edit, check, and run Rust-like sandbox scripts."
+    about = "Edit, check, and run Luau sandbox scripts."
 )]
 struct NativeArgs {
     /// Enable the embedded eguidev MCP runtime.
@@ -53,131 +75,6 @@ impl NativeArgs {
     }
 }
 
-/// Mutable app state shared with eguidev fixtures.
-#[derive(Debug)]
-pub struct AppState {
-    /// Current editor buffer.
-    pub source: String,
-    /// Current checker result.
-    pub check_result: CheckResult,
-    /// Last run result.
-    pub run_result: RunResult,
-    run_history: Vec<RunRecord>,
-    next_run_number: usize,
-    editor_scroll: ScrollAreaState,
-    output_scroll: ScrollAreaState,
-}
-
-impl Default for AppState {
-    fn default() -> Self {
-        Self::with_source(DEFAULT_SOURCE.to_string())
-    }
-}
-
-impl AppState {
-    fn with_source(source: String) -> Self {
-        let check_result = check(&source);
-        Self {
-            source,
-            check_result,
-            run_result: RunResult::default(),
-            run_history: Vec::new(),
-            next_run_number: 1,
-            editor_scroll: ScrollAreaState::default(),
-            output_scroll: ScrollAreaState::default(),
-        }
-    }
-
-    fn reset(&mut self) {
-        *self = Self::default();
-    }
-
-    fn replace_with_error_sample(&mut self) {
-        self.source = "fn main() {\n    let width: i64 = 6;\n    println!(height);\n}".to_string();
-        self.check_result = check(&self.source);
-        self.clear_runs();
-    }
-
-    fn refresh_check(&mut self) {
-        self.check_result = check(&self.source);
-    }
-
-    fn run(&mut self) {
-        self.run_result = execute(&self.source);
-        self.check_result = CheckResult {
-            diagnostics: self.run_result.diagnostics.clone(),
-        };
-        self.run_history.push(RunRecord {
-            number: self.next_run_number,
-            result: self.run_result.clone(),
-        });
-        self.next_run_number += 1;
-    }
-
-    fn clear_runs(&mut self) {
-        self.run_result = RunResult::default();
-        self.run_history.clear();
-        self.next_run_number = 1;
-        self.editor_scroll.reset();
-        self.output_scroll.reset();
-    }
-
-    fn output_history_text(&self) -> String {
-        if self.run_history.is_empty() {
-            return "Run the program to see output.".to_string();
-        }
-
-        self.run_history
-            .iter()
-            .map(RunRecord::display_text)
-            .collect::<Vec<_>>()
-            .join("\n\n")
-    }
-}
-
-/// A rendered script execution kept in the output history.
-#[derive(Debug, Clone)]
-struct RunRecord {
-    number: usize,
-    result: RunResult,
-}
-
-impl RunRecord {
-    fn display_text(&self) -> String {
-        let mut text = format!(
-            "Run {} - {}",
-            self.number,
-            if self.result.is_ok() { "ok" } else { "failed" }
-        );
-
-        if self.result.output.is_empty() {
-            if self.result.is_ok() {
-                text.push_str("\nProgram produced no output.");
-            } else {
-                text.push_str("\nRun failed. Fix diagnostics and try again.");
-            }
-        } else {
-            text.push('\n');
-            text.push_str(self.result.output.trim_end());
-        }
-
-        if !self.result.diagnostics.is_empty() {
-            text.push_str("\nDiagnostics:");
-            for diagnostic in &self.result.diagnostics {
-                text.push_str(&format!(
-                    "\n{}:{}: {}",
-                    diagnostic.span.line, diagnostic.span.column, diagnostic.message
-                ));
-                if let Some(help) = &diagnostic.help {
-                    text.push_str(&format!("\n  help: {help}"));
-                }
-            }
-        }
-
-        text
-    }
-}
-
 /// Root eframe application.
 pub struct SandboxApp {
     devmcp: DevMcp,
@@ -189,7 +86,8 @@ pub struct SandboxApp {
 impl SandboxApp {
     /// Construct a new sandbox application.
     #[must_use]
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        theme::install_fonts(&cc.egui_ctx);
         let state = Arc::new(Mutex::new(AppState::default()));
         Self {
             devmcp: build_devmcp(false, &state),
@@ -203,10 +101,11 @@ impl SandboxApp {
     #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn with_devtools(
-        _cc: &eframe::CreationContext<'_>,
+        cc: &eframe::CreationContext<'_>,
         enable_mcp: bool,
         initial_source: String,
     ) -> Self {
+        theme::install_fonts(&cc.egui_ctx);
         let state = Arc::new(Mutex::new(AppState::with_source(initial_source)));
         Self {
             devmcp: build_devmcp(enable_mcp, &state),
@@ -221,29 +120,29 @@ impl SandboxApp {
             ui.horizontal(|ui| {
                 ui.heading(RichText::new(APP_TITLE).color(theme::ACCENT));
                 ui.separator();
-
-                let status = if state.check_result.is_ok() {
-                    RichText::new("checked").color(theme::GOOD)
-                } else {
-                    RichText::new("errors").color(theme::BAD)
-                };
-                ui.dev_label("status.check", status);
+                ui.dev_label("status.check", check_status_text(&state.check_result));
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.dev_button("action.reset", "Reset").clicked() {
-                        state.reset();
-                    }
+                    let run_hint = format!(
+                        "Run the program ({})",
+                        ui.ctx().format_shortcut(&RUN_SHORTCUT)
+                    );
                     if ui
-                        .dev_button("action.sample_error", "Error Sample")
+                        .dev_button("action.run", RichText::new("▶ Run").strong())
+                        .on_hover_text(run_hint)
                         .clicked()
                     {
-                        state.replace_with_error_sample();
-                    }
-                    if ui.dev_button("action.run", "Run").clicked() {
                         state.run();
                     }
-                    if ui.dev_button("action.check", "Check").clicked() {
-                        state.refresh_check();
+                    ui.dev_menu_button("samples.menu", "Samples", |ui| {
+                        show_samples_menu(ui, state);
+                    });
+                    if ui
+                        .dev_button("action.reset", "Reset")
+                        .on_hover_text("Restore the default program and clear output")
+                        .clicked()
+                    {
+                        state.reset();
                     }
                 });
             });
@@ -260,15 +159,21 @@ impl SandboxApp {
                 source_changed = true;
             }
 
+            let marks = collect_line_marks(&state.check_result.diagnostics);
             let mut layouter = |ui: &Ui, text: &dyn TextBuffer, wrap_width: f32| -> Arc<Galley> {
-                let mut job = highlight_rust(text.as_str());
+                let mut job = highlight_source(text.as_str(), &marks);
                 job.wrap.max_width = wrap_width;
                 ui.fonts_mut(|fonts| fonts.layout_job(job))
             };
 
+            let line_count = state.source.lines().count().max(1);
             let editor_height = ui.available_height().max(0.0);
-            let response = state
-                .editor_scroll
+            let AppState {
+                source,
+                editor_scroll,
+                ..
+            } = state;
+            let response = editor_scroll
                 .show_viewport(
                     egui::ScrollArea::vertical()
                         .id_salt("editor.scroll")
@@ -279,32 +184,7 @@ impl SandboxApp {
                     "editor.scroll",
                     |ui, viewport| {
                         ui.set_min_width(ui.available_width());
-                        let response = ui.add_sized(
-                            [ui.available_width(), viewport.height()],
-                            TextEdit::multiline(&mut state.source)
-                                .font(TextStyle::Monospace)
-                                .desired_width(f32::INFINITY)
-                                .desired_rows(1)
-                                .code_editor()
-                                .layouter(&mut layouter),
-                        );
-                        track_response_full(
-                            "editor.source",
-                            &response,
-                            WidgetMeta {
-                                role: WidgetRole::TextEdit,
-                                label: Some("source".to_string()),
-                                value: Some(WidgetValue::Text(state.source.clone())),
-                                role_state: Some(RoleState::TextEdit {
-                                    multiline: true,
-                                    password: false,
-                                }),
-                                layout: Some(capture_layout(ui, &response)),
-                                visible: ui.is_visible() && ui.is_rect_visible(response.rect),
-                                ..WidgetMeta::default()
-                            },
-                        );
-                        response
+                        show_editor_text(ui, source, viewport, &marks, line_count, &mut layouter)
                     },
                 )
                 .inner;
@@ -339,7 +219,20 @@ impl SandboxApp {
 
     fn show_output(&self, ui: &mut Ui, state: &mut AppState) {
         ui.vertical(|ui| {
-            ui.dev_label("output.heading", RichText::new("Output").strong());
+            ui.horizontal(|ui| {
+                ui.dev_label("output.heading", RichText::new("Output").strong());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_enabled_ui(state.has_runs(), |ui| {
+                        if ui
+                            .dev_button("output.clear", "Clear")
+                            .on_hover_text("Discard the run history")
+                            .clicked()
+                        {
+                            state.clear_output();
+                        }
+                    });
+                });
+            });
             ui.add_space(6.0);
 
             let body_size = ui.available_size();
@@ -466,11 +359,6 @@ impl SandboxApp {
     }
 }
 
-const DEFAULT_SPLIT_RATIO: f32 = 0.5;
-const DIVIDER_WIDTH: f32 = 8.0;
-const MIN_LEFT_PANE_WIDTH: f32 = 260.0;
-const MIN_RIGHT_PANE_WIDTH: f32 = 300.0;
-
 #[derive(Debug, Clone, Copy)]
 struct SplitLayout {
     left_rect: Rect,
@@ -560,8 +448,6 @@ fn show_output_text(ui: &mut Ui, output: String) -> egui::Response {
 }
 
 impl eframe::App for SandboxApp {
-    fn update(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {}
-
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let devmcp = self.devmcp.clone();
@@ -575,6 +461,9 @@ impl eframe::App for SandboxApp {
             .show(ui, |ui| {
                 let state = Arc::clone(&self.state);
                 let mut state = state.lock().expect("app state lock");
+                if ctx.input_mut(|input| input.consume_shortcut(&RUN_SHORTCUT)) {
+                    state.run();
+                }
                 self.show_top_bar(ui, &mut state);
                 ui.add_space(10.0);
                 self.show_workspace(ui, &mut state);
@@ -634,7 +523,7 @@ fn build_devmcp(enable_mcp: bool, state: &Arc<Mutex<AppState>>) -> DevMcp {
     let devmcp = DevMcp::new()
         .fixtures(vec![
             FixtureSpec::new("sandbox.default", "Default checked source.").anchor("editor.source"),
-            FixtureSpec::new("sandbox.error", "Source with one undefined value.")
+            FixtureSpec::new("sandbox.error", "Broken sample with undefined values.")
                 .anchor("diagnostics.0"),
         ])
         .on_fixture(move |name| {
@@ -645,7 +534,9 @@ fn build_devmcp(enable_mcp: bool, state: &Arc<Mutex<AppState>>) -> DevMcp {
                     Ok(())
                 }
                 "sandbox.error" => {
-                    state.replace_with_error_sample();
+                    let sample = sample_by_name("Broken program")
+                        .ok_or_else(|| "missing broken sample".to_string())?;
+                    state.load_sample(sample);
                     Ok(())
                 }
                 _ => Err(format!("unknown fixture: {name}")),
@@ -661,231 +552,221 @@ fn build_devmcp(enable_mcp: bool, state: &Arc<Mutex<AppState>>) -> DevMcp {
     devmcp
 }
 
-fn show_diagnostic(ui: &mut Ui, index: usize, diagnostic: &Diagnostic) {
-    let color = match diagnostic.severity {
-        Severity::Error => theme::BAD,
-        Severity::Warning => theme::WARN,
-    };
-    let text = format!(
-        "{}:{}: {}",
-        diagnostic.span.line, diagnostic.span.column, diagnostic.message
+/// Font used for editor source text and the line-number gutter.
+fn editor_font() -> FontId {
+    FontId::new(13.0, FontFamily::Monospace)
+}
+
+/// Render the source text editor with a line-number gutter inside the editor
+/// scroll viewport.
+fn show_editor_text(
+    ui: &mut Ui,
+    source: &mut String,
+    viewport: Rect,
+    marks: &BTreeMap<usize, LineMark>,
+    line_count: usize,
+    layouter: &mut dyn FnMut(&Ui, &dyn TextBuffer, f32) -> Arc<Galley>,
+) -> egui::Response {
+    let font = editor_font();
+    let digits = line_count.max(10).to_string().len();
+    let glyph_width = ui.fonts_mut(|fonts| fonts.glyph_width(&font, '0'));
+    let gutter_width = (digits as f32).mul_add(glyph_width, GUTTER_PADDING * 2.0);
+    let origin = ui.cursor().min;
+
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.add_space(gutter_width);
+        let output = ui
+            .allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), viewport.height()),
+                egui::Layout::centered_and_justified(egui::Direction::TopDown),
+                |ui| {
+                    TextEdit::multiline(source)
+                        .font(TextStyle::Monospace)
+                        .desired_width(f32::INFINITY)
+                        .desired_rows(1)
+                        .code_editor()
+                        .layouter(layouter)
+                        .show(ui)
+                },
+            )
+            .inner;
+        let response = output.response.response.clone();
+
+        paint_gutter(ui, origin, gutter_width, &output, marks, &font);
+        track_response_full(
+            "editor.source",
+            &response,
+            WidgetMeta {
+                role: WidgetRole::TextEdit,
+                label: Some("source".to_string()),
+                value: Some(WidgetValue::Text(source.clone())),
+                role_state: Some(RoleState::TextEdit {
+                    multiline: true,
+                    password: false,
+                }),
+                layout: Some(capture_layout(ui, &response)),
+                visible: ui.is_visible() && ui.is_rect_visible(response.rect),
+                ..WidgetMeta::default()
+            },
+        );
+        response
+    })
+    .inner
+}
+
+/// Paint line numbers alongside the editor galley, marking diagnostic lines.
+fn paint_gutter(
+    ui: &Ui,
+    origin: egui::Pos2,
+    gutter_width: f32,
+    output: &TextEditOutput,
+    marks: &BTreeMap<usize, LineMark>,
+    font: &FontId,
+) {
+    let painter = ui.painter();
+    let editor_rect = output.response.response.rect;
+    let gutter_rect = Rect::from_min_max(
+        egui::pos2(origin.x, editor_rect.min.y),
+        egui::pos2(origin.x + gutter_width, editor_rect.max.y),
+    );
+    painter.rect_filled(gutter_rect, 0.0, theme::EDITOR_BG);
+    painter.vline(
+        gutter_rect.max.x - 1.0,
+        gutter_rect.y_range(),
+        Stroke::new(1.0, theme::DIVIDER.gamma_multiply(0.6)),
     );
 
-    eguidev::container(ui, format!("diagnostics.{index}"), |ui| {
-        ui.dev_label(
-            format!("diagnostics.{index}.message"),
-            RichText::new(text).color(color).monospace(),
-        );
-        if let Some(help) = &diagnostic.help {
-            ui.dev_label(
-                format!("diagnostics.{index}.help"),
-                RichText::new(help).color(theme::MUTED),
+    let number_x = gutter_rect.max.x - GUTTER_PADDING;
+    let mut line_number = 1_usize;
+    let mut is_line_start = true;
+    for row in &output.galley.rows {
+        if is_line_start {
+            let color = marks.get(&line_number).map_or(theme::GUTTER, |mark| {
+                if mark.has_error {
+                    theme::BAD
+                } else {
+                    theme::WARN
+                }
+            });
+            painter.text(
+                egui::pos2(number_x, output.galley_pos.y + row.pos.y),
+                egui::Align2::RIGHT_TOP,
+                line_number,
+                font.clone(),
+                color,
             );
         }
+        is_line_start = row.ends_with_newline;
+        if row.ends_with_newline {
+            line_number += 1;
+        }
+    }
+}
+
+fn check_status_text(check_result: &CheckResult) -> RichText {
+    let errors = count_severity(check_result, Severity::Error);
+    let warnings = count_severity(check_result, Severity::Warning);
+    if errors > 0 {
+        RichText::new(format!("{errors} error{}", plural(errors))).color(theme::BAD)
+    } else if warnings > 0 {
+        RichText::new(format!("{warnings} warning{}", plural(warnings))).color(theme::WARN)
+    } else {
+        RichText::new("checked").color(theme::GOOD)
+    }
+}
+
+fn count_severity(check_result: &CheckResult, severity: Severity) -> usize {
+    check_result
+        .diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == severity)
+        .count()
+}
+
+const fn plural(count: usize) -> &'static str {
+    if count == 1 { "" } else { "s" }
+}
+
+fn show_samples_menu(ui: &mut Ui, state: &mut AppState) {
+    ui.set_min_width(180.0);
+    for (index, sample) in SAMPLES.iter().enumerate() {
+        let response = ui
+            .dev_button(
+                format!("samples.item.{index}"),
+                RichText::new(sample.name).color(theme::TEXT),
+            )
+            .on_hover_text(sample.description);
+        if response.clicked() {
+            state.load_sample(sample);
+        }
+    }
+}
+
+fn show_diagnostic(ui: &mut Ui, index: usize, diagnostic: &Diagnostic) {
+    let (severity_name, color) = match diagnostic.severity {
+        Severity::Error => ("error", theme::BAD),
+        Severity::Warning => ("warning", theme::WARN),
+    };
+
+    eguidev::container(ui, format!("diagnostics.{index}"), |ui| {
+        egui::Frame::new()
+            .fill(theme::PANEL)
+            .corner_radius(6)
+            .inner_margin(Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.dev_label(
+                        format!("diagnostics.{index}.severity"),
+                        RichText::new(severity_name).color(color).strong().small(),
+                    );
+                    ui.dev_label(
+                        format!("diagnostics.{index}.location"),
+                        RichText::new(format!(
+                            "line {}, column {}",
+                            diagnostic.span.line, diagnostic.span.column
+                        ))
+                        .color(theme::MUTED)
+                        .small(),
+                    );
+                });
+                ui.dev_label(
+                    format!("diagnostics.{index}.message"),
+                    RichText::new(&diagnostic.message).color(theme::TEXT),
+                );
+                if let Some(help) = &diagnostic.help {
+                    ui.dev_label(
+                        format!("diagnostics.{index}.help"),
+                        RichText::new(format!("help: {help}")).color(theme::MUTED),
+                    );
+                }
+            });
         ui.add_space(6.0);
     });
 }
 
-fn highlight_rust(source: &str) -> LayoutJob {
-    let monospace = FontId::new(13.0, FontFamily::Monospace);
-    let mut job = LayoutJob::default();
-    let mut rest = source;
-
-    while !rest.is_empty() {
-        if let Some(comment_start) = rest.find("//")
-            && comment_start == 0
-        {
-            push(&mut job, rest, &monospace, theme::COMMENT);
-            break;
-        }
-
-        let Some((token, kind, tail)) = next_token(rest) else {
-            push(&mut job, rest, &monospace, theme::TEXT);
-            break;
-        };
-        push(&mut job, token, &monospace, token_color(kind));
-        rest = tail;
-    }
-
-    job.wrap.break_anywhere = false;
-    job
-}
-
-#[derive(Debug, Clone, Copy)]
-enum TokenKind {
-    Plain,
-    Keyword,
-    Number,
-    String,
-    Comment,
-    Macro,
-}
-
-fn next_token(input: &str) -> Option<(&str, TokenKind, &str)> {
-    let first = input.chars().next()?;
-    if first == '"' {
-        let len = string_token_len(input);
-        return Some((&input[..len], TokenKind::String, &input[len..]));
-    }
-    if input.starts_with("//") {
-        return Some((input, TokenKind::Comment, ""));
-    }
-    if first.is_ascii_digit() {
-        let len = take_while(input, |ch| ch.is_ascii_digit());
-        return Some((&input[..len], TokenKind::Number, &input[len..]));
-    }
-    if first == '_' || first.is_ascii_alphabetic() {
-        let len = take_while(input, |ch| ch == '_' || ch.is_ascii_alphanumeric());
-        let mut token_len = len;
-        let mut kind = if is_keyword(&input[..len]) {
-            TokenKind::Keyword
-        } else {
-            TokenKind::Plain
-        };
-        if input[len..].starts_with('!') {
-            token_len += 1;
-            kind = TokenKind::Macro;
-        }
-        return Some((&input[..token_len], kind, &input[token_len..]));
-    }
-
-    let len = first.len_utf8();
-    Some((&input[..len], TokenKind::Plain, &input[len..]))
-}
-
-fn string_token_len(input: &str) -> usize {
-    let mut escaped = false;
-    for (idx, ch) in input.char_indices().skip(1) {
-        if escaped {
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else if ch == '"' {
-            return idx + 1;
-        }
-    }
-    input.len()
-}
-
-fn take_while(input: &str, pred: impl Fn(char) -> bool) -> usize {
-    input
-        .char_indices()
-        .find_map(|(idx, ch)| (!pred(ch)).then_some(idx))
-        .unwrap_or(input.len())
-}
-
-fn is_keyword(token: &str) -> bool {
-    matches!(
-        token,
-        "as" | "break"
-            | "const"
-            | "continue"
-            | "else"
-            | "enum"
-            | "false"
-            | "fn"
-            | "for"
-            | "if"
-            | "impl"
-            | "in"
-            | "let"
-            | "loop"
-            | "match"
-            | "mod"
-            | "move"
-            | "mut"
-            | "pub"
-            | "ref"
-            | "return"
-            | "self"
-            | "Self"
-            | "static"
-            | "struct"
-            | "super"
-            | "trait"
-            | "true"
-            | "type"
-            | "unsafe"
-            | "use"
-            | "where"
-            | "while"
-    )
-}
-
-fn token_color(kind: TokenKind) -> Color32 {
-    match kind {
-        TokenKind::Plain => theme::TEXT,
-        TokenKind::Keyword => theme::KEYWORD,
-        TokenKind::Number => theme::NUMBER,
-        TokenKind::String => theme::STRING,
-        TokenKind::Comment => theme::COMMENT,
-        TokenKind::Macro => theme::MACRO,
-    }
-}
-
-fn push(job: &mut LayoutJob, text: &str, font_id: &FontId, color: Color32) {
-    job.append(
-        text,
-        0.0,
-        TextFormat {
-            font_id: font_id.clone(),
-            color,
-            ..Default::default()
-        },
-    );
-}
-
-mod theme {
-    use egui::{Color32, Context, Stroke, Style, Visuals};
-
-    pub const BACKGROUND: Color32 = Color32::from_rgb(0x10, 0x12, 0x18);
-    pub const PANEL: Color32 = Color32::from_rgb(0x18, 0x1d, 0x24);
-    pub const TEXT: Color32 = Color32::from_rgb(0xea, 0xed, 0xf3);
-    pub const MUTED: Color32 = Color32::from_rgb(0xa8, 0xb1, 0xc2);
-    pub const ACCENT: Color32 = Color32::from_rgb(0x67, 0xd8, 0xef);
-    pub const DIVIDER: Color32 = Color32::from_rgb(0x3a, 0x44, 0x52);
-    pub const GOOD: Color32 = Color32::from_rgb(0x6d, 0xdb, 0x8b);
-    pub const WARN: Color32 = Color32::from_rgb(0xf2, 0xc4, 0x66);
-    pub const BAD: Color32 = Color32::from_rgb(0xff, 0x7a, 0x7a);
-    pub const KEYWORD: Color32 = Color32::from_rgb(0xc7, 0x92, 0xea);
-    pub const NUMBER: Color32 = Color32::from_rgb(0xf7, 0xc8, 0x73);
-    pub const STRING: Color32 = Color32::from_rgb(0x9c, 0xd6, 0x7a);
-    pub const COMMENT: Color32 = Color32::from_rgb(0x7c, 0x88, 0x99);
-    pub const MACRO: Color32 = Color32::from_rgb(0x82, 0xaa, 0xff);
-
-    pub fn apply(ctx: &Context) {
-        let mut style = Style {
-            visuals: Visuals::dark(),
-            ..(*ctx.global_style()).clone()
-        };
-        style.visuals.panel_fill = BACKGROUND;
-        style.visuals.window_fill = PANEL;
-        style.visuals.widgets.noninteractive.bg_fill = PANEL;
-        style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(0x20, 0x25, 0x2e);
-        style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(0x29, 0x31, 0x3d);
-        style.visuals.widgets.active.bg_fill = Color32::from_rgb(0x30, 0x3a, 0x49);
-        style.visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT);
-        style.visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
-        ctx.set_global_style(style);
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     #[cfg(not(target_arch = "wasm32"))]
     use std::{env, fs, path::Path, process};
 
     #[cfg(not(target_arch = "wasm32"))]
     use clap::Parser;
+    use egui::{Color32, Stroke};
+    use ruau_sandbox::check;
 
     #[cfg(not(target_arch = "wasm32"))]
     use super::NativeArgs;
-    use super::{AppState, highlight_rust, theme};
+    use super::{AppState, collect_line_marks, highlight_source, theme};
 
     #[test]
-    fn syntax_highlighting_classifies_rust_tokens() {
-        let job =
-            highlight_rust("fn main() {\n    let n = 42;\n    println!(\"{n}\"); // output\n}");
+    fn syntax_highlighting_classifies_luau_tokens() {
+        let job = highlight_source(
+            "local n = 42\nprint(\"value = \" .. n) -- output\n",
+            &BTreeMap::new(),
+        );
         let colors = job
             .sections
             .iter()
@@ -900,8 +781,45 @@ mod tests {
     }
 
     #[test]
+    fn comments_end_at_the_line_break() {
+        let job = highlight_source("-- note\nlocal x = 1", &BTreeMap::new());
+        let colors = job
+            .sections
+            .iter()
+            .map(|section| section.format.color)
+            .collect::<Vec<_>>();
+
+        assert!(colors.contains(&theme::COMMENT));
+        assert!(
+            colors.contains(&theme::KEYWORD),
+            "keyword after a comment line should not be swallowed by the comment"
+        );
+    }
+
+    #[test]
+    fn diagnostics_mark_error_lines() {
+        let source = "--!strict\nprint(missing)";
+        let marks = collect_line_marks(&check(source).diagnostics);
+        let job = highlight_source(source, &marks);
+
+        assert_eq!(job.text, source, "layout must reconstruct the source");
+        assert!(
+            job.sections
+                .iter()
+                .any(|section| section.format.background != Color32::TRANSPARENT),
+            "error line should have a background tint"
+        );
+        assert!(
+            job.sections
+                .iter()
+                .any(|section| section.format.underline != Stroke::NONE),
+            "error span should be underlined"
+        );
+    }
+
+    #[test]
     fn app_state_checks_initial_source() {
-        let state = AppState::with_source("fn main() {\n    println!(missing);\n}".to_string());
+        let state = AppState::with_source("--!strict\nprint(missing)".to_string());
 
         assert!(!state.check_result.is_ok());
     }
@@ -918,7 +836,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn native_args_load_source_from_script() -> anyhow::Result<()> {
-        let source = "fn main() {\n    println!(\"loaded\");\n}\n";
+        let source = "print(\"loaded\")\n";
         let path = env::temp_dir().join(format!("ruau-sandbox-script-load-{}.rs", process::id()));
         fs::write(&path, source)?;
 

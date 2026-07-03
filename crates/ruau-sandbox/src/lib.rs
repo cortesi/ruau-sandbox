@@ -1,22 +1,135 @@
 //! Shared checker and executor for the Ruau sandbox UI.
 //!
-//! The first engine is intentionally small and deterministic: it accepts a
-//! Rust-shaped subset that can run in native and wasm builds without a compiler
-//! subprocess. It gives the GUI real diagnostics, output, and source locations
-//! while leaving room to swap in a fuller backend later.
+//! This crate is intentionally a thin adapter over the real Ruau parser,
+//! checker, compiler, and VM. The editor buffer is treated as one Luau chunk:
+//! declarations do not run unless called, top-level statements run in order,
+//! and typed Luau syntax is handled by Ruau rather than by a local parser.
 
 #![allow(clippy::missing_docs_in_private_items)]
 
-use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use ruau::{
+    bytecode::CompileError,
+    source::{ModuleId, Source},
+    surface::{PrepareError, PreparedRunError, PreparedScript, Surface, VmConfig},
+    typecheck::{
+        DiagnosticView, Diagnostics, OneBasedDiagnosticLocation, Severity as RuauSeverity,
+    },
+    vm::{CallOptions, ExecError, MarshaledPair, MarshaledValue, PrintSink, SinkQuota},
+};
+
+const CHUNK_NAME: &str = "sandbox.luau";
+const DEFAULT_GAS: u64 = 50_000_000;
+const DEFAULT_MAX_MEMORY_BYTES: usize = 32 * 1024 * 1024;
+const DEFAULT_PRINT_MAX_BYTES: usize = 64 * 1024;
+const DEFAULT_PRINT_MAX_CALLS: usize = 1024;
 
 /// A default program shown in the editor on first launch.
-pub const DEFAULT_SOURCE: &str = r#"fn main() {
-    let width: i64 = 6;
-    let height = 7;
-    let area = width * height;
+pub const DEFAULT_SOURCE: &str = r#"--!strict
 
-    println!("area = {}", area);
-}"#;
+function area(width: number, height: number): number
+    return width * height
+end
+
+print("area = " .. area(6, 7))"#;
+
+/// A named example program offered by the sandbox UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sample {
+    /// Short name shown in the samples menu.
+    pub name: &'static str,
+    /// One-line description of what the sample demonstrates.
+    pub description: &'static str,
+    /// Program source loaded into the editor.
+    pub source: &'static str,
+}
+
+/// Example programs offered by the sandbox UI. The first entry is the default
+/// program.
+pub const SAMPLES: &[Sample] = &[
+    Sample {
+        name: "Area",
+        description: "Multiply two bindings and print the result.",
+        source: DEFAULT_SOURCE,
+    },
+    Sample {
+        name: "Functions",
+        description: "Declare global and local helpers, then call them from the chunk.",
+        source: r#"--!strict
+
+function greet(name: string): string
+    return "hello, " .. name
+end
+
+local function shout(message: string): string
+    return string.upper(message)
+end
+
+print(shout(greet("Ada")))"#,
+    },
+    Sample {
+        name: "Math helpers",
+        description: "Compose two typed function declarations.",
+        source: r#"--!strict
+
+function square(value: number): number
+    return value * value
+end
+
+function sum_of_squares(left: number, right: number): number
+    return square(left) + square(right)
+end
+
+print("sum = " .. sum_of_squares(3, 4))"#,
+    },
+    Sample {
+        name: "Tables",
+        description: "Iterate a table and print formatted output.",
+        source: r#"--!strict
+
+local scores = {
+    ada = 11,
+    grace = 17,
+    linus = 13,
+}
+
+for name, score in pairs(scores) do
+    print(name .. ": " .. score)
+end"#,
+    },
+    Sample {
+        name: "Types",
+        description: "Use a typed record and a typed function.",
+        source: r#"--!strict
+
+type Point = {
+    x: number,
+    y: number,
+}
+
+local function magnitude(point: Point): number
+    return math.sqrt(point.x * point.x + point.y * point.y)
+end
+
+print("magnitude = " .. magnitude({ x = 3, y = 4 }))"#,
+    },
+    Sample {
+        name: "Broken program",
+        description: "Deliberate mistakes that show real Ruau diagnostics.",
+        source: r#"--!strict
+
+local width: number = 6
+print(height)
+print(width + "wide")"#,
+    },
+];
+
+/// Find a sample by name.
+#[must_use]
+pub fn sample_by_name(name: &str) -> Option<&'static Sample> {
+    SAMPLES.iter().find(|sample| sample.name == name)
+}
 
 /// Severity of a source diagnostic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,6 +184,17 @@ impl Diagnostic {
         }
     }
 
+    /// Construct a warning diagnostic.
+    #[must_use]
+    pub fn warning(span: SourceSpan, message: impl Into<String>) -> Self {
+        Self {
+            severity: Severity::Warning,
+            message: message.into(),
+            span,
+            help: None,
+        }
+    }
+
     /// Add a help note to this diagnostic.
     #[must_use]
     pub fn with_help(mut self, help: impl Into<String>) -> Self {
@@ -90,10 +214,7 @@ impl CheckResult {
     /// Whether no errors were found.
     #[must_use]
     pub fn is_ok(&self) -> bool {
-        !self
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity == Severity::Error)
+        diagnostics_are_ok(&self.diagnostics)
     }
 }
 
@@ -110,698 +231,237 @@ impl RunResult {
     /// Whether the program ran without errors.
     #[must_use]
     pub fn is_ok(&self) -> bool {
-        !self
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity == Severity::Error)
+        diagnostics_are_ok(&self.diagnostics)
     }
 }
 
 /// Check source without returning execution output.
 #[must_use]
 pub fn check(source: &str) -> CheckResult {
-    let analysis = analyze(source, Mode::Check);
-    CheckResult {
-        diagnostics: analysis.diagnostics,
+    match prepare(source) {
+        Ok(prepared) => CheckResult {
+            diagnostics: diagnostics_from_ruau(prepared.diagnostics()),
+        },
+        Err(error) => CheckResult {
+            diagnostics: diagnostics_from_prepare_error(&error),
+        },
     }
 }
 
-/// Execute source and capture output.
+/// Execute source as one Luau chunk and capture `print` output.
 #[must_use]
 pub fn execute(source: &str) -> RunResult {
-    let analysis = analyze(source, Mode::Execute);
-    RunResult {
-        diagnostics: analysis.diagnostics,
-        output: analysis.output,
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Check,
-    Execute,
-}
-
-#[derive(Debug, Default)]
-struct Analysis {
-    diagnostics: Vec<Diagnostic>,
-    output: String,
-}
-
-#[derive(Debug, Clone)]
-struct SourceLine {
-    number: usize,
-    text: String,
-}
-
-#[derive(Debug, Clone)]
-struct StatementLine {
-    number: usize,
-    text: String,
-}
-
-fn analyze(source: &str, mode: Mode) -> Analysis {
-    let mut analysis = Analysis::default();
-    let Some(lines) = extract_body(source, &mut analysis.diagnostics) else {
-        return analysis;
+    let prepared = match prepare(source) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            return RunResult {
+                diagnostics: diagnostics_from_prepare_error(&error),
+                output: String::new(),
+            };
+        }
     };
 
-    let mut env = BTreeMap::new();
-    let mut saw_statement = false;
-
-    for line in &lines {
-        let Some(statement) = statement_from_line(line) else {
-            continue;
-        };
-        saw_statement = true;
-        if let Some((name, value)) = parse_let(&statement, &env, &mut analysis.diagnostics) {
-            env.insert(name, value);
-        } else if let Some(output) = parse_print(&statement, &env, &mut analysis.diagnostics) {
-            if mode == Mode::Execute {
-                analysis.output.push_str(&output);
-            }
-        } else if !starts_like_supported_statement(&statement.text) {
-            analysis.diagnostics.push(
-                Diagnostic::error(
-                    SourceSpan::new(statement.number, leading_column(&statement.text), 1),
-                    "expected a `let` binding or `println!` call",
-                )
-                .with_help("supported statements are `let name = expr;` and `println!(...);`"),
-            );
+    let surface = Surface::new();
+    let mut vm = match surface
+        .vm_builder(&VmConfig::metered_untrusted(
+            0,
+            DEFAULT_GAS,
+            DEFAULT_MAX_MEMORY_BYTES,
+        ))
+        .build()
+    {
+        Ok(vm) => vm,
+        Err(error) => {
+            return RunResult {
+                diagnostics: vec![Diagnostic::error(
+                    SourceSpan::new(1, 1, 1),
+                    format!("failed to build Ruau VM: {error}"),
+                )],
+                output: String::new(),
+            };
         }
-    }
+    };
 
-    if !saw_statement && analysis.diagnostics.is_empty() {
-        analysis.diagnostics.push(
-            Diagnostic::error(
-                SourceSpan::new(1, 1, 1),
-                "program does not contain any statements",
-            )
-            .with_help("add a `let` binding or a `println!` call inside `fn main`"),
-        );
-    }
+    let prints = Arc::new(Mutex::new(Vec::<String>::new()));
+    let options = CallOptions::new().print_sink_with_quota(
+        print_sink(Arc::clone(&prints)),
+        SinkQuota {
+            max_bytes: Some(DEFAULT_PRINT_MAX_BYTES),
+            max_calls: Some(DEFAULT_PRINT_MAX_CALLS),
+        },
+    );
 
-    analysis
+    let diagnostics = match prepared.run_in_with_options(&mut vm, options) {
+        Ok(_) => Vec::new(),
+        Err(error) => vec![diagnostic_from_run_error(&error)],
+    };
+
+    RunResult {
+        diagnostics,
+        output: prints_to_output(prints),
+    }
 }
 
-fn extract_body(source: &str, diagnostics: &mut Vec<Diagnostic>) -> Option<Vec<SourceLine>> {
-    if let Some(fn_start) = source.find("fn main") {
-        let Some(open_rel) = source[fn_start..].find('{') else {
-            diagnostics.push(
-                Diagnostic::error(
-                    line_col(source, fn_start),
-                    "`fn main` is missing an opening `{`",
-                )
-                .with_help("write `fn main() { ... }`"),
-            );
-            return None;
-        };
-        let open = fn_start + open_rel;
-        let Some(close) = matching_brace(source, open) else {
-            diagnostics.push(Diagnostic::error(
-                line_col(source, open),
-                "`fn main` block is missing a closing `}`",
-            ));
-            return None;
-        };
-        return Some(source_lines(
-            &source[open + 1..close],
-            line_number(source, open + 1),
+fn prepare(source: &str) -> Result<PreparedScript, PrepareError> {
+    Surface::new().prepare(Source::text(ModuleId::new(CHUNK_NAME), source))
+}
+
+fn diagnostics_are_ok(diagnostics: &[Diagnostic]) -> bool {
+    !diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error)
+}
+
+fn diagnostics_from_prepare_error(error: &PrepareError) -> Vec<Diagnostic> {
+    let mut diagnostics = diagnostics_from_ruau(error.diagnostics());
+    if let Some(compile_error) = error.compile_error() {
+        diagnostics.push(diagnostic_from_compile_error(compile_error));
+    }
+    if diagnostics.is_empty() {
+        diagnostics.push(Diagnostic::error(
+            SourceSpan::new(1, 1, 1),
+            error.to_string(),
         ));
     }
-
-    Some(source_lines(source, 1))
+    diagnostics
 }
 
-fn matching_brace(source: &str, open: usize) -> Option<usize> {
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut chars = source[open..].char_indices();
+fn diagnostics_from_ruau(diagnostics: &Diagnostics) -> Vec<Diagnostic> {
+    diagnostics.views().map(diagnostic_from_view).collect()
+}
 
-    for (rel, ch) in &mut chars {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
+fn diagnostic_from_view(view: DiagnosticView<'_>) -> Diagnostic {
+    let span = source_span_from_location(view.primary_location);
+    let mut diagnostic = match view.severity {
+        RuauSeverity::Error => Diagnostic::error(span, view.message),
+        RuauSeverity::Warning | RuauSeverity::Info => Diagnostic::warning(span, view.message),
+    };
+    diagnostic.help = Some(view.category_label.into_owned());
+    diagnostic
+}
+
+fn diagnostic_from_compile_error(error: &CompileError) -> Diagnostic {
+    let span = error
+        .location()
+        .map_or(SourceSpan::new(1, 1, 1), |location| {
+            SourceSpan::new(
+                location.begin.line as usize + 1,
+                location.begin.column as usize + 1,
+                diagnostic_len(
+                    location.begin.line as usize,
+                    location.begin.column as usize,
+                    location.end.line as usize,
+                    location.end.column as usize,
+                ),
+            )
+        });
+    Diagnostic::error(span, error.message().to_owned()).with_help(format!("{:?}", error.kind()))
+}
+
+fn diagnostic_from_run_error(error: &PreparedRunError) -> Diagnostic {
+    match error {
+        PreparedRunError::Load(error) => {
+            Diagnostic::error(SourceSpan::new(1, 1, 1), format!("load failed: {error}"))
         }
+        PreparedRunError::Exec(error) => diagnostic_from_exec_error(error),
+    }
+}
 
-        match ch {
-            '"' => in_string = true,
-            '{' => depth += 1,
-            '}' => {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(open + rel);
-                }
-            }
-            _ => {}
+fn diagnostic_from_exec_error(error: &ExecError) -> Diagnostic {
+    let span = error
+        .script_error()
+        .and_then(|error| error.primary_frame())
+        .and_then(|frame| frame.line)
+        .map_or(SourceSpan::new(1, 1, 1), |line| {
+            SourceSpan::new(line as usize, 1, 1)
+        });
+    Diagnostic::error(span, runtime_message(error))
+}
+
+fn runtime_message(error: &ExecError) -> String {
+    let Some(error) = error.script_error() else {
+        return error.message();
+    };
+    match error.value() {
+        MarshaledValue::String(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        MarshaledValue::Nil => "nil".to_owned(),
+        MarshaledValue::Boolean(value) => value.to_string(),
+        MarshaledValue::Number(value) => value.to_string(),
+        MarshaledValue::Integer(value) => value.to_string(),
+        MarshaledValue::Table(pairs) => marshaled_table_string_field(pairs, "message")
+            .unwrap_or_else(|| "script raised table".to_owned()),
+        value => format!("script raised {}", value.type_name()),
+    }
+}
+
+fn marshaled_table_string_field(pairs: &[MarshaledPair], field: &str) -> Option<String> {
+    pairs.iter().find_map(|pair| {
+        let MarshaledValue::String(key) = &pair.key else {
+            return None;
+        };
+        if key.as_slice() != field.as_bytes() {
+            return None;
         }
-    }
-
-    None
-}
-
-fn source_lines(source: &str, start_line: usize) -> Vec<SourceLine> {
-    source
-        .lines()
-        .enumerate()
-        .map(|(index, text)| SourceLine {
-            number: start_line + index,
-            text: text.to_string(),
-        })
-        .collect()
-}
-
-fn statement_from_line(line: &SourceLine) -> Option<StatementLine> {
-    let trimmed = line.text.trim();
-    if trimmed.is_empty() || trimmed.starts_with("//") {
-        return None;
-    }
-
-    Some(StatementLine {
-        number: line.number,
-        text: strip_line_comment(&line.text).trim_end().to_string(),
+        let MarshaledValue::String(value) = &pair.value else {
+            return None;
+        };
+        Some(String::from_utf8_lossy(value).into_owned())
     })
 }
 
-fn strip_line_comment(line: &str) -> &str {
-    let mut in_string = false;
-    let mut escaped = false;
-    let mut iter = line.char_indices().peekable();
-
-    while let Some((idx, ch)) = iter.next() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-
-        if ch == '"' {
-            in_string = true;
-        } else if ch == '/' && iter.peek().is_some_and(|(_, next)| *next == '/') {
-            return &line[..idx];
-        }
+fn source_span_from_location(location: OneBasedDiagnosticLocation) -> SourceSpan {
+    if location.is_missing() {
+        return SourceSpan::new(1, 1, 1);
     }
-
-    line
-}
-
-fn starts_like_supported_statement(text: &str) -> bool {
-    let trimmed = text.trim_start();
-    trimmed.starts_with("let ") || trimmed.starts_with("println!") || trimmed.starts_with("print!")
-}
-
-fn parse_let(
-    statement: &StatementLine,
-    env: &BTreeMap<String, i64>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<(String, i64)> {
-    let trimmed = statement.text.trim_start();
-    if !trimmed.starts_with("let ") {
-        return None;
-    }
-
-    let semicolonless = require_semicolon(statement, diagnostics)?;
-    let rest = semicolonless
-        .trim_start()
-        .strip_prefix("let ")?
-        .trim_start();
-    let Some((left, expr)) = rest.split_once('=') else {
-        diagnostics.push(Diagnostic::error(
-            SourceSpan::new(statement.number, leading_column(&statement.text), 3),
-            "`let` binding is missing `=`",
-        ));
-        return Some((String::new(), 0));
-    };
-
-    let (name, type_name) = parse_binding_name(left.trim(), statement, diagnostics)?;
-    if let Some(type_name) = type_name
-        && !matches!(type_name, "i64" | "i32" | "isize" | "u64" | "u32" | "usize")
-    {
-        diagnostics.push(
-            Diagnostic::error(
-                SourceSpan::new(
-                    statement.number,
-                    column_of(&statement.text, type_name),
-                    type_name.len(),
-                ),
-                format!("unsupported integer type `{type_name}`"),
-            )
-            .with_help("use one of `i64`, `i32`, `isize`, `u64`, `u32`, or `usize`"),
-        );
-        return Some((String::new(), 0));
-    }
-
-    let base_col = column_of(&statement.text, expr);
-    let value = ExprParser::new(expr, statement.number, base_col, env)
-        .parse()
-        .map_err(|diagnostic| diagnostics.push(diagnostic))
-        .ok()?;
-
-    Some((name.to_string(), value))
-}
-
-fn parse_binding_name<'a>(
-    left: &'a str,
-    statement: &StatementLine,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<(&'a str, Option<&'a str>)> {
-    let (name, type_name) = match left.split_once(':') {
-        Some((name, type_name)) => (name.trim(), Some(type_name.trim())),
-        None => (left.trim(), None),
-    };
-
-    if is_ident(name) {
-        return Some((name, type_name));
-    }
-
-    diagnostics.push(Diagnostic::error(
-        SourceSpan::new(
-            statement.number,
-            column_of(&statement.text, left),
-            left.len().max(1),
+    SourceSpan::new(
+        location.begin.line as usize,
+        location.begin.column as usize,
+        diagnostic_len(
+            location.begin.line as usize,
+            location.begin.column as usize,
+            location.end.line as usize,
+            location.end.column as usize,
         ),
-        format!("invalid binding name `{name}`"),
-    ));
-    None
+    )
 }
 
-fn parse_print(
-    statement: &StatementLine,
-    env: &BTreeMap<String, i64>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<String> {
-    let trimmed = statement.text.trim_start();
-    let (macro_name, newline) = if trimmed.starts_with("println!") {
-        ("println!", true)
-    } else if trimmed.starts_with("print!") {
-        ("print!", false)
+fn diagnostic_len(
+    start_line: usize,
+    start_column: usize,
+    end_line: usize,
+    end_column: usize,
+) -> usize {
+    if end_line == start_line {
+        end_column.saturating_sub(start_column).max(1)
     } else {
-        return None;
+        1
+    }
+}
+
+fn print_sink(prints: Arc<Mutex<Vec<String>>>) -> PrintSink {
+    Box::new(move |line| {
+        let message = String::from_utf8_lossy(line)
+            .trim_end_matches('\n')
+            .to_owned();
+        if let Ok(mut prints) = prints.lock() {
+            prints.push(message);
+        }
+    })
+}
+
+fn prints_to_output(prints: Arc<Mutex<Vec<String>>>) -> String {
+    let prints = match Arc::try_unwrap(prints) {
+        Ok(prints) => prints.into_inner().unwrap_or_default(),
+        Err(prints) => prints
+            .lock()
+            .map(|prints| prints.clone())
+            .unwrap_or_default(),
     };
-
-    let semicolonless = require_semicolon(statement, diagnostics)?;
-    let rest = semicolonless.trim_start().strip_prefix(macro_name)?.trim();
-    if !rest.starts_with('(') || !rest.ends_with(')') {
-        diagnostics.push(
-            Diagnostic::error(
-                SourceSpan::new(
-                    statement.number,
-                    column_of(&statement.text, macro_name),
-                    macro_name.len(),
-                ),
-                format!("`{macro_name}` expects parentheses"),
-            )
-            .with_help(format!(
-                "write `{macro_name}(...) ;` without the extra space before `;`"
-            )),
-        );
-        return Some(String::new());
-    }
-
-    let inner = &rest[1..rest.len() - 1];
-    let args = split_args(inner);
-    if args.is_empty() {
-        diagnostics.push(Diagnostic::error(
-            SourceSpan::new(statement.number, column_of(&statement.text, inner), 1),
-            format!("`{macro_name}` needs at least one argument"),
-        ));
-        return Some(String::new());
-    }
-
-    let mut output = if is_string_literal(args[0]) {
-        render_format_string(args[0], &args[1..], statement, env, diagnostics)
+    if prints.is_empty() {
+        String::new()
     } else {
-        eval_print_expr(args[0], statement, env, diagnostics)
-    }?;
-
-    if newline {
-        output.push('\n');
+        format!("{}\n", prints.join("\n"))
     }
-    Some(output)
-}
-
-fn render_format_string(
-    template_arg: &str,
-    value_args: &[&str],
-    statement: &StatementLine,
-    env: &BTreeMap<String, i64>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<String> {
-    let template = unescape_string(template_arg)
-        .map_err(|message| {
-            diagnostics.push(Diagnostic::error(
-                SourceSpan::new(
-                    statement.number,
-                    column_of(&statement.text, template_arg),
-                    template_arg.len(),
-                ),
-                message,
-            ));
-        })
-        .ok()?;
-
-    let placeholders = template.matches("{}").count();
-    if placeholders != value_args.len() {
-        diagnostics.push(
-            Diagnostic::error(
-                SourceSpan::new(
-                    statement.number,
-                    column_of(&statement.text, template_arg),
-                    template_arg.len(),
-                ),
-                format!(
-                    "format string expects {placeholders} values, but {} were provided",
-                    value_args.len()
-                ),
-            )
-            .with_help("this sandbox supports `{}` placeholders"),
-        );
-        return None;
-    }
-
-    let mut values = Vec::with_capacity(value_args.len());
-    for arg in value_args {
-        values.push(eval_print_expr(arg, statement, env, diagnostics)?);
-    }
-
-    let mut rendered = template;
-    for value in values {
-        rendered = rendered.replacen("{}", &value, 1);
-    }
-
-    Some(rendered)
-}
-
-fn eval_print_expr(
-    expr: &str,
-    statement: &StatementLine,
-    env: &BTreeMap<String, i64>,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<String> {
-    let base_col = column_of(&statement.text, expr);
-    ExprParser::new(expr, statement.number, base_col, env)
-        .parse()
-        .map(|value| value.to_string())
-        .map_err(|diagnostic| diagnostics.push(diagnostic))
-        .ok()
-}
-
-fn require_semicolon<'a>(
-    statement: &'a StatementLine,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<&'a str> {
-    let trimmed = statement.text.trim_end();
-    if let Some(stripped) = trimmed.strip_suffix(';') {
-        return Some(stripped);
-    }
-
-    diagnostics.push(
-        Diagnostic::error(
-            SourceSpan::new(statement.number, statement.text.len().saturating_add(1), 1),
-            "statement is missing a trailing `;`",
-        )
-        .with_help("Rust statements in this sandbox must end with `;`"),
-    );
-    None
-}
-
-fn is_string_literal(value: &str) -> bool {
-    value.trim_start().starts_with('"')
-}
-
-fn unescape_string(value: &str) -> Result<String, String> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with('"') || !trimmed.ends_with('"') || trimmed.len() < 2 {
-        return Err("expected a string literal".to_string());
-    }
-
-    let mut out = String::new();
-    let mut chars = trimmed[1..trimmed.len() - 1].chars();
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            out.push(ch);
-            continue;
-        }
-
-        match chars.next() {
-            Some('n') => out.push('\n'),
-            Some('"') => out.push('"'),
-            Some('\\') => out.push('\\'),
-            Some(other) => return Err(format!("unsupported escape sequence `\\{other}`")),
-            None => return Err("unterminated escape sequence".to_string()),
-        }
-    }
-
-    Ok(out)
-}
-
-fn split_args(input: &str) -> Vec<&str> {
-    let mut args = Vec::new();
-    let mut start = 0usize;
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-
-    for (idx, ch) in input.char_indices() {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == '"' {
-                in_string = false;
-            }
-            continue;
-        }
-
-        match ch {
-            '"' => in_string = true,
-            '(' => depth += 1,
-            ')' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => {
-                let arg = input[start..idx].trim();
-                if !arg.is_empty() {
-                    args.push(arg);
-                }
-                start = idx + 1;
-            }
-            _ => {}
-        }
-    }
-
-    let arg = input[start..].trim();
-    if !arg.is_empty() {
-        args.push(arg);
-    }
-    args
-}
-
-struct ExprParser<'a> {
-    input: &'a str,
-    pos: usize,
-    line: usize,
-    base_col: usize,
-    env: &'a BTreeMap<String, i64>,
-}
-
-impl<'a> ExprParser<'a> {
-    fn new(input: &'a str, line: usize, base_col: usize, env: &'a BTreeMap<String, i64>) -> Self {
-        Self {
-            input,
-            pos: 0,
-            line,
-            base_col,
-            env,
-        }
-    }
-
-    fn parse(mut self) -> Result<i64, Diagnostic> {
-        let value = self.expr()?;
-        self.skip_ws();
-        if !self.is_done() {
-            return Err(self.error("unexpected token in expression", 1));
-        }
-        Ok(value)
-    }
-
-    fn expr(&mut self) -> Result<i64, Diagnostic> {
-        let mut value = self.term()?;
-        loop {
-            self.skip_ws();
-            if self.take('+') {
-                value = value
-                    .checked_add(self.term()?)
-                    .ok_or_else(|| self.error("integer addition overflowed", 1))?;
-            } else if self.take('-') {
-                value = value
-                    .checked_sub(self.term()?)
-                    .ok_or_else(|| self.error("integer subtraction overflowed", 1))?;
-            } else {
-                break;
-            }
-        }
-        Ok(value)
-    }
-
-    fn term(&mut self) -> Result<i64, Diagnostic> {
-        let mut value = self.factor()?;
-        loop {
-            self.skip_ws();
-            if self.take('*') {
-                value = value
-                    .checked_mul(self.factor()?)
-                    .ok_or_else(|| self.error("integer multiplication overflowed", 1))?;
-            } else if self.take('/') {
-                let rhs = self.factor()?;
-                if rhs == 0 {
-                    return Err(self.error("division by zero", 1));
-                }
-                value /= rhs;
-            } else {
-                break;
-            }
-        }
-        Ok(value)
-    }
-
-    fn factor(&mut self) -> Result<i64, Diagnostic> {
-        self.skip_ws();
-        if self.take('-') {
-            return self
-                .factor()?
-                .checked_neg()
-                .ok_or_else(|| self.error("integer negation overflowed", 1));
-        }
-
-        if self.take('(') {
-            let value = self.expr()?;
-            self.skip_ws();
-            if !self.take(')') {
-                return Err(self.error("missing closing `)`", 1));
-            }
-            return Ok(value);
-        }
-
-        match self.peek() {
-            Some(ch) if ch.is_ascii_digit() => self.number(),
-            Some(ch) if is_ident_start(ch) => self.identifier(),
-            Some(_) => Err(self.error(
-                "expected an integer, identifier, or parenthesized expression",
-                1,
-            )),
-            None => Err(self.error("expected an expression", 1)),
-        }
-    }
-
-    fn number(&mut self) -> Result<i64, Diagnostic> {
-        let start = self.pos;
-        while self.peek().is_some_and(|ch| ch.is_ascii_digit()) {
-            self.bump();
-        }
-        self.input[start..self.pos]
-            .parse()
-            .map_err(|_| self.error("integer literal is too large", self.pos - start))
-    }
-
-    fn identifier(&mut self) -> Result<i64, Diagnostic> {
-        let start = self.pos;
-        self.bump();
-        while self.peek().is_some_and(is_ident_continue) {
-            self.bump();
-        }
-        let name = &self.input[start..self.pos];
-        self.env.get(name).copied().ok_or_else(|| {
-            Diagnostic::error(
-                SourceSpan::new(self.line, self.base_col + start, name.len()),
-                format!("cannot find value `{name}` in this scope"),
-            )
-            .with_help("create it first with `let name = ...;`")
-        })
-    }
-
-    fn error(&self, message: impl Into<String>, len: usize) -> Diagnostic {
-        Diagnostic::error(
-            SourceSpan::new(self.line, self.base_col + self.pos, len),
-            message,
-        )
-    }
-
-    fn skip_ws(&mut self) {
-        while self.peek().is_some_and(char::is_whitespace) {
-            self.bump();
-        }
-    }
-
-    fn take(&mut self, expected: char) -> bool {
-        if self.peek() == Some(expected) {
-            self.bump();
-            true
-        } else {
-            false
-        }
-    }
-
-    fn bump(&mut self) {
-        let Some(ch) = self.peek() else {
-            return;
-        };
-        self.pos += ch.len_utf8();
-    }
-
-    fn peek(&self) -> Option<char> {
-        self.input[self.pos..].chars().next()
-    }
-
-    fn is_done(&self) -> bool {
-        self.pos >= self.input.len()
-    }
-}
-
-fn is_ident(value: &str) -> bool {
-    let mut chars = value.chars();
-    chars.next().is_some_and(is_ident_start) && chars.all(is_ident_continue)
-}
-
-fn is_ident_start(ch: char) -> bool {
-    ch == '_' || ch.is_ascii_alphabetic()
-}
-
-fn is_ident_continue(ch: char) -> bool {
-    ch == '_' || ch.is_ascii_alphanumeric()
-}
-
-fn leading_column(text: &str) -> usize {
-    text.len() - text.trim_start().len() + 1
-}
-
-fn column_of(haystack: &str, needle: &str) -> usize {
-    haystack.find(needle).map_or(1, |idx| idx + 1)
-}
-
-fn line_number(source: &str, byte: usize) -> usize {
-    source[..byte.min(source.len())]
-        .bytes()
-        .filter(|b| *b == b'\n')
-        .count()
-        + 1
-}
-
-fn line_col(source: &str, byte: usize) -> SourceSpan {
-    let byte = byte.min(source.len());
-    let line_start = source[..byte].rfind('\n').map_or(0, |idx| idx + 1);
-    SourceSpan::new(line_number(source, byte), byte - line_start + 1, 1)
 }
 
 #[cfg(test)]
@@ -816,24 +476,125 @@ mod tests {
     }
 
     #[test]
-    fn reports_unknown_identifier() {
-        let result = check("fn main() {\n    println!(missing);\n}");
+    fn empty_source_is_valid() {
+        let result = execute("\n-- no statements yet\n");
+        assert!(result.is_ok(), "{:?}", result.diagnostics);
+        assert!(result.output.is_empty());
+    }
+
+    #[test]
+    fn function_declaration_does_not_auto_run() {
+        let result = execute("local function main()\n    print(\"ok\")\nend");
+        assert!(result.is_ok(), "{:?}", result.diagnostics);
+        assert!(result.output.is_empty());
+    }
+
+    #[test]
+    fn global_function_declaration_does_not_auto_run() {
+        let result = execute("function main()\n    print(\"ok\")\nend");
+        assert!(result.is_ok(), "{:?}", result.diagnostics);
+        assert!(result.output.is_empty());
+    }
+
+    #[test]
+    fn executes_global_function_call_in_chunk() {
+        let result = execute(
+            r#"--!strict
+
+function greet(name: string): string
+    return "hello, " .. name
+end
+
+print(greet("Ada"))"#,
+        );
+        assert!(result.is_ok(), "{:?}", result.diagnostics);
+        assert_eq!(result.output, "hello, Ada\n");
+    }
+
+    #[test]
+    fn executes_local_function_call_in_chunk() {
+        let result = execute(
+            r#"--!strict
+
+local function square(value: number): number
+    return value * value
+end
+
+print("square = " .. square(7))"#,
+        );
+        assert!(result.is_ok(), "{:?}", result.diagnostics);
+        assert_eq!(result.output, "square = 49\n");
+    }
+
+    #[test]
+    fn accepts_typed_luau_syntax() {
+        let result = execute(
+            r#"--!strict
+
+type Point = { x: number, y: number }
+
+local function magnitude(point: Point): number
+    return math.sqrt(point.x * point.x + point.y * point.y)
+end
+
+print("magnitude = " .. magnitude({ x = 3, y = 4 }))"#,
+        );
+        assert!(result.is_ok(), "{:?}", result.diagnostics);
+        assert_eq!(result.output, "magnitude = 5\n");
+    }
+
+    #[test]
+    fn reports_typecheck_diagnostics() {
+        let result = check("--!strict\nprint(height)");
         assert!(!result.is_ok());
-        assert!(result.diagnostics[0].message.contains("missing"));
+        assert!(result.diagnostics[0].message.contains("height"));
         assert_eq!(result.diagnostics[0].span.line, 2);
     }
 
     #[test]
-    fn reports_division_by_zero() {
-        let result = check("let x = 1 / 0;");
+    fn execute_does_not_emit_output_when_checking_fails() {
+        let result = execute("--!strict\nprint(height)");
         assert!(!result.is_ok());
-        assert_eq!(result.diagnostics[0].message, "division by zero");
+        assert!(result.output.is_empty());
+        assert!(result.diagnostics[0].message.contains("height"));
     }
 
     #[test]
-    fn formats_placeholders() {
-        let result = execute("let a = 2;\nlet b = 3;\nprintln!(\"{} + {}\", a, b);");
-        assert!(result.is_ok(), "{:?}", result.diagnostics);
-        assert_eq!(result.output, "2 + 3\n");
+    fn reports_compile_diagnostics() {
+        let result = check("local function broken(");
+        assert!(!result.is_ok());
+        assert!(!result.diagnostics[0].message.is_empty());
+    }
+
+    #[test]
+    fn reports_runtime_errors() {
+        let result = execute("error(\"boom\")");
+        assert!(!result.is_ok());
+        assert!(result.output.is_empty());
+        assert!(result.diagnostics[0].message.contains("boom"));
+    }
+
+    #[test]
+    fn samples_check_as_described() {
+        for sample in SAMPLES {
+            let result = check(sample.source);
+            if sample.name == "Broken program" {
+                assert!(!result.is_ok(), "broken sample should have errors");
+            } else {
+                assert!(
+                    result.is_ok(),
+                    "sample `{}` should check cleanly: {:?}",
+                    sample.name,
+                    result.diagnostics
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sample_lookup_finds_default() {
+        let sample = sample_by_name("Area").expect("default sample");
+        assert_eq!(sample.source, DEFAULT_SOURCE);
+        assert!(sample_by_name("nope").is_none());
     }
 }

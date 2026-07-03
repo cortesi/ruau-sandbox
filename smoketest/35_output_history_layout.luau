@@ -26,8 +26,17 @@ vp:wait_for_capture()
 
 vp:widget_get("action.run"):click()
 local editor = vp:widget_get("editor.source")
-local second_source = "fn main() {\n    let value = 15;\n    println!(\"value = {}\", value);\n}"
+local second_source = table.concat({
+    "function value(): number",
+    "    return 15",
+    "end",
+    "",
+    "print(\"value = \" .. value())",
+}, "\n")
 editor:set_value(second_source)
+vp:wait_for_widget("editor.source", function(widget)
+    return widget.value_text == second_source
+end)
 vp:widget_get("action.run"):click()
 
 local output = vp:wait_for_widget("output.text", function(widget)
@@ -75,10 +84,13 @@ assert(
 )
 
 local lines = {}
+lines[#lines + 1] = "function line_text(index)"
+lines[#lines + 1] = "    return \"line \" .. index"
+lines[#lines + 1] = "end"
 for index = 1, 32 do
-    lines[#lines + 1] = "    println!(\"line " .. tostring(index) .. "\");"
+    lines[#lines + 1] = "print(line_text(" .. tostring(index) .. "))"
 end
-editor:set_value("fn main() {\n" .. table.concat(lines, "\n") .. "\n}")
+editor:set_value(table.concat(lines, "\n"))
 vp:widget_get("action.run"):click()
 
 history = vp:wait_for_widget("output.history", function(widget)
