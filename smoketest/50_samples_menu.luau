@@ -3,7 +3,7 @@ local vp = root()
 
 -- The samples menu lists every registered sample.
 vp:widget_get("samples.menu"):click()
-vp:wait_for_widget_visible("samples.item.0")
+expect("samples.item.0", { visible = true })
 local items = vp:widget_list({ id_prefix = "samples.item." })
 assert(#items >= 6, "samples menu should list all samples, found " .. tostring(#items))
 
@@ -17,17 +17,11 @@ end
 assert(broken_index ~= nil, "samples menu should contain the broken sample")
 
 vp:widget_get(broken_index):click()
-vp:wait_for_widget_absent("samples.item.0")
+expect_absent("samples.item.0")
 
-local editor = vp:wait_for_widget("editor.source", function(widget)
-    return string.find(widget.value_text, "width", 1, true) ~= nil
-end)
-local status = vp:wait_for_widget("status.check", function(widget)
-    return widget.value_text == "2 errors"
-end)
-local diagnostic = vp:wait_for_widget("diagnostics.0.message", function(widget)
-    return string.find(widget.value_text, "height", 1, true) ~= nil
-end)
+local editor = expect("editor.source", { value_text_contains = "width" })
+local status = expect("status.check", { value_text_contains = "2 errors" })
+local diagnostic = expect("diagnostics.0.message", { value_text_contains = "height" })
 
 -- Loading a sample must isolate it from previous runs.
 local output = vp:widget_get("output.text"):state()

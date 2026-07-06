@@ -1414,7 +1414,9 @@ dependencies = [
 
 [[package]]
 name = "eguidev"
-version = "0.0.2"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ffd72d5b07c862ff3c7713afab1531e8b7dfbff208cb93672081c0b9a6b107fe"
 dependencies = [
  "egui",
  "schemars",
@@ -1425,12 +1427,17 @@ dependencies = [
 
 [[package]]
 name = "eguidev_runtime"
-version = "0.0.2"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef3aef45f46ea7cdd928db94c230240acc7c8ec40ff85b8537158ea25b462af3"
 dependencies = [
  "async-trait",
  "base64",
+ "core-foundation 0.9.4",
+ "core-graphics",
  "egui",
  "eguidev",
+ "foreign-types",
  "glob",
  "image",
  "objc2 0.6.4",
@@ -4315,6 +4322,7 @@ dependencies = [
  "eguidev",
  "eguidev_runtime",
  "ruau-sandbox",
+ "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

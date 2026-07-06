@@ -19,14 +19,16 @@ use egui::{
     text_edit::TextEditOutput,
 };
 use eguidev::{
-    DevMcp, DevUiExt, FixtureSpec, FrameGuard, RoleState, WidgetMeta, WidgetRole, WidgetValue,
-    capture_layout, take_widget_value_override, track_response_full,
+    DevMcp, DevUiExt, DiagnosticError, FixtureError, FixtureResponse, FixtureSpec, FrameGuard,
+    RoleState, WidgetMeta, WidgetRole, WidgetValue, capture_layout, take_widget_value_override,
+    track_response_full,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "devtools"))]
 use eguidev_runtime::attach as attach_runtime;
 #[cfg(not(target_arch = "wasm32"))]
 use ruau_sandbox::DEFAULT_SOURCE;
 use ruau_sandbox::{CheckResult, Diagnostic, SAMPLES, Severity, sample_by_name};
+use serde_json::{Value, json};
 
 mod state;
 mod syntax;
@@ -469,10 +471,6 @@ impl eframe::App for SandboxApp {
                 self.show_workspace(ui, &mut state);
             });
     }
-
-    fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
-        eguidev::raw_input_hook(&self.devmcp, ctx, raw_input);
-    }
 }
 
 /// Run the native sandbox application.
@@ -520,28 +518,43 @@ fn validate_devtools(enable_mcp: bool) -> anyhow::Result<()> {
 
 fn build_devmcp(enable_mcp: bool, state: &Arc<Mutex<AppState>>) -> DevMcp {
     let state_for_handler = Arc::clone(state);
+    let state_for_diagnostic = Arc::clone(state);
     let devmcp = DevMcp::new()
         .fixtures(vec![
             FixtureSpec::new("sandbox.default", "Default checked source.").anchor("editor.source"),
             FixtureSpec::new("sandbox.error", "Broken sample with undefined values.")
                 .anchor("diagnostics.0"),
         ])
-        .on_fixture(move |name| {
-            let mut state = state_for_handler.lock().map_err(|err| err.to_string())?;
-            match name {
+        .on_fixture_runtime(move |call| {
+            let mut state = state_for_handler
+                .lock()
+                .map_err(|err| FixtureError::new("state_lock", err.to_string()))?;
+            match call.name.as_str() {
                 "sandbox.default" => {
                     state.reset();
-                    Ok(())
+                    Ok(FixtureResponse::new())
                 }
                 "sandbox.error" => {
-                    let sample = sample_by_name("Broken program")
-                        .ok_or_else(|| "missing broken sample".to_string())?;
+                    let sample = sample_by_name("Broken program").ok_or_else(|| {
+                        FixtureError::new("sandbox_fixture", "missing broken sample")
+                    })?;
                     state.load_sample(sample);
-                    Ok(())
+                    Ok(FixtureResponse::new())
                 }
-                _ => Err(format!("unknown fixture: {name}")),
+                _ => Err(FixtureError::new(
+                    "sandbox_fixture",
+                    format!("unknown fixture: {}", call.name),
+                )),
             }
-        });
+        })
+        .expect("hard-coded sandbox fixture handler is unique")
+        .diagnostic("sandbox.state", move || {
+            let state = state_for_diagnostic
+                .lock()
+                .map_err(|err| DiagnosticError::new("state_lock", err.to_string()))?;
+            Ok(sandbox_diagnostic(&state))
+        })
+        .expect("hard-coded sandbox diagnostic name is unique");
 
     #[cfg(all(not(target_arch = "wasm32"), feature = "devtools"))]
     if enable_mcp {
@@ -550,6 +563,42 @@ fn build_devmcp(enable_mcp: bool, state: &Arc<Mutex<AppState>>) -> DevMcp {
 
     let _ = enable_mcp;
     devmcp
+}
+
+/// Return semantic sandbox state for smoke tests and failure bundles.
+fn sandbox_diagnostic(state: &AppState) -> Value {
+    json!({
+        "source": {
+            "bytes": state.source.len(),
+            "lines": state.source.lines().count(),
+        },
+        "check": {
+            "ok": state.check_result.is_ok(),
+            "diagnostics": state.check_result.diagnostics.len(),
+            "errors": count_diagnostic_severity(&state.check_result.diagnostics, Severity::Error),
+            "warnings": count_diagnostic_severity(&state.check_result.diagnostics, Severity::Warning),
+        },
+        "run": {
+            "ok": state.run_result.is_ok(),
+            "diagnostics": state.run_result.diagnostics.len(),
+            "errors": count_diagnostic_severity(&state.run_result.diagnostics, Severity::Error),
+            "warnings": count_diagnostic_severity(&state.run_result.diagnostics, Severity::Warning),
+            "output_bytes": state.run_result.output.len(),
+            "has_output": !state.run_result.output.is_empty(),
+        },
+        "history": {
+            "runs": state.run_history.len(),
+            "next_run_number": state.next_run_number,
+        },
+    })
+}
+
+/// Count diagnostics with a specific severity.
+fn count_diagnostic_severity(diagnostics: &[Diagnostic], severity: Severity) -> usize {
+    diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == severity)
+        .count()
 }
 
 /// Font used for editor source text and the line-number gutter.

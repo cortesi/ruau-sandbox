@@ -1,14 +1,17 @@
 # Ruau Sandbox
 
-Ruau Sandbox is a small egui application for editing, checking, and running
-Luau snippets. It is intentionally built around a shared core so native and
-wasm builds use the same diagnostics and execution behavior.
+Ruau Sandbox is a small demonstration app for Ruau. It provides a focused
+egui-based workspace for editing Luau snippets, inspecting Ruau diagnostics, and
+running code through the same core used by the native and wasm builds.
+
+The app is intentionally modest: it shows how Ruau can be embedded in a
+desktop/web interface without adding unrelated product surface.
 
 ## Run
 
 ```sh
 cargo run
-cargo run -- path/to/script.rs
+cargo run -- path/to/script.luau
 ```
 
 ## Build Web
