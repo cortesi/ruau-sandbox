@@ -99,21 +99,28 @@ pub struct RunRecord {
 }
 
 impl RunRecord {
-    fn display_text(&self) -> String {
-        let mut text = format!(
-            "Run {} - {}",
-            self.number,
-            if self.result.is_ok() { "ok" } else { "failed" }
-        );
+    pub(crate) fn header_text(&self) -> String {
+        format!("Run {}", self.number)
+    }
+
+    pub(crate) fn is_ok(&self) -> bool {
+        self.result.is_ok()
+    }
+
+    pub(crate) fn has_output(&self) -> bool {
+        !self.result.output.is_empty()
+    }
+
+    pub(crate) fn body_text(&self) -> String {
+        let mut text = String::new();
 
         if self.result.output.is_empty() {
             if self.result.is_ok() {
-                text.push_str("\nProgram produced no output.");
+                text.push_str("Program produced no output.");
             } else {
-                text.push_str("\nRun failed. Fix diagnostics and try again.");
+                text.push_str("Run failed. Fix diagnostics and try again.");
             }
         } else {
-            text.push('\n');
             text.push_str(self.result.output.trim_end());
         }
 
@@ -128,6 +135,17 @@ impl RunRecord {
                     text.push_str(&format!("\n  help: {help}"));
                 }
             }
+        }
+
+        text
+    }
+
+    fn display_text(&self) -> String {
+        let mut text = self.header_text();
+        let body = self.body_text();
+        if !body.is_empty() {
+            text.push('\n');
+            text.push_str(&body);
         }
 
         text

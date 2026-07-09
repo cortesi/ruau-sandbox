@@ -26,8 +26,6 @@ assert(output ~= nil, "run should render output from edited source")
 local broken = "--!strict\nprint(missing)"
 editor = vp:widget_get("editor.source")
 editor:set_value(broken)
-local status = expect("status.check", { value_text_contains = "error" })
-assert(status.value_text == "1 error", "status should count errors for invalid source")
 
 local diagnostic = expect("diagnostics.0.message", { value_text_contains = "missing" })
 assert(diagnostic ~= nil, "diagnostic should name the missing value")
@@ -43,5 +41,5 @@ assert(
 return {
     output = output.value_text,
     diagnostic = diagnostic.value_text,
-    status = status.value_text,
+    severity = severity.value_text,
 }

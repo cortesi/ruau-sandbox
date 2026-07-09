@@ -41,9 +41,6 @@ cognitive_complexity = "warn"
 excessive_nesting = "warn"
 too_many_lines = "warn"
 
-[patch.crates-io]
-tmcp = { path = "/Users/cortesi/git/public/tmcp/crates/tmcp" }
-
 [profile.wasm-release]
 inherits = "release"
 opt-level = "z"

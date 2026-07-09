@@ -11,6 +11,7 @@ const MONO_FONT: &str = "jetbrains-mono";
 
 pub const BACKGROUND: Color32 = Color32::from_rgb(0x10, 0x12, 0x18);
 pub const PANEL: Color32 = Color32::from_rgb(0x18, 0x1d, 0x24);
+pub const HEADER: Color32 = Color32::from_rgb(0x20, 0x25, 0x2e);
 pub const EDITOR_BG: Color32 = Color32::from_rgb(0x0c, 0x0e, 0x14);
 pub const GUTTER: Color32 = Color32::from_rgb(0x51, 0x5c, 0x6e);
 pub const TEXT: Color32 = Color32::from_rgb(0xea, 0xed, 0xf3);

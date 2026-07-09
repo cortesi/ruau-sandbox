@@ -27,7 +27,7 @@ use eguidev::{
 use eguidev_runtime::attach as attach_runtime;
 #[cfg(not(target_arch = "wasm32"))]
 use ruau_sandbox::DEFAULT_SOURCE;
-use ruau_sandbox::{CheckResult, Diagnostic, SAMPLES, Severity, sample_by_name};
+use ruau_sandbox::{Diagnostic, SAMPLES, Severity, sample_by_name};
 use serde_json::{Value, json};
 
 mod state;
@@ -35,6 +35,7 @@ mod syntax;
 mod theme;
 
 pub use state::AppState;
+use state::RunRecord;
 use syntax::{LineMark, collect_line_marks, highlight_source};
 
 /// Keyboard shortcut that runs the current program.
@@ -43,6 +44,7 @@ const RUN_SHORTCUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND,
 /// Native window title.
 pub const APP_TITLE: &str = "Ruau Sandbox";
 
+const RUAU_REPO_URL: &str = "https://github.com/cortesi/ruau";
 const DEFAULT_SPLIT_RATIO: f32 = 0.5;
 const DIVIDER_WIDTH: f32 = 8.0;
 const MIN_LEFT_PANE_WIDTH: f32 = 260.0;
@@ -120,9 +122,18 @@ impl SandboxApp {
     fn show_top_bar(&self, ui: &mut Ui, state: &mut AppState) {
         eguidev::container(ui, "app.toolbar", |ui| {
             ui.horizontal(|ui| {
-                ui.heading(RichText::new(APP_TITLE).color(theme::ACCENT));
-                ui.separator();
-                ui.dev_label("status.check", check_status_text(&state.check_result));
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.scope(|ui| {
+                        ui.visuals_mut().hyperlink_color = theme::ACCENT;
+                        ui.dev_hyperlink_to(
+                            "app.title.ruau",
+                            RichText::new("Ruau").strong().size(19.0),
+                            RUAU_REPO_URL,
+                        );
+                    });
+                    ui.heading(RichText::new("Sandbox").color(theme::ACCENT));
+                });
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let run_hint = format!(
@@ -153,7 +164,6 @@ impl SandboxApp {
 
     fn show_editor(&self, ui: &mut Ui, state: &mut AppState) {
         ui.vertical(|ui| {
-            ui.dev_label("editor.heading", RichText::new("Editor").strong());
             let mut source_changed = false;
             if let Some(WidgetValue::Text(source)) = take_widget_value_override(ui, "editor.source")
             {
@@ -199,7 +209,14 @@ impl SandboxApp {
 
     fn show_diagnostics(&self, ui: &mut Ui, state: &AppState) {
         ui.vertical(|ui| {
-            ui.dev_label("diagnostics.heading", RichText::new("Diagnostics").strong());
+            show_pane_heading(
+                ui,
+                "diagnostics.header",
+                "diagnostics.heading",
+                "Diagnostics",
+                |_| {},
+            );
+            ui.add_space(6.0);
             egui::ScrollArea::vertical()
                 .id_salt("diagnostics.scroll")
                 .auto_shrink([false, false])
@@ -221,8 +238,7 @@ impl SandboxApp {
 
     fn show_output(&self, ui: &mut Ui, state: &mut AppState) {
         ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                ui.dev_label("output.heading", RichText::new("Output").strong());
+            show_pane_heading(ui, "output.header", "output.heading", "Output", |ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_enabled_ui(state.has_runs(), |ui| {
                         if ui
@@ -244,8 +260,7 @@ impl SandboxApp {
                         .fill(theme::PANEL)
                         .inner_margin(Margin::same(10))
                         .show(ui, |ui| {
-                            let output = state.output_history_text();
-                            show_output_history(ui, state, output);
+                            show_output_history(ui, state);
                         });
                 });
             });
@@ -361,6 +376,32 @@ impl SandboxApp {
     }
 }
 
+fn show_pane_heading(
+    ui: &mut Ui,
+    container_id: &str,
+    label_id: &str,
+    title: &str,
+    actions: impl FnOnce(&mut Ui),
+) {
+    eguidev::container(ui, container_id, |ui| {
+        egui::Frame::new()
+            .fill(theme::HEADER)
+            .stroke(Stroke::new(1.0, theme::DIVIDER.gamma_multiply(0.7)))
+            .corner_radius(4)
+            .inner_margin(Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    ui.dev_label(
+                        label_id,
+                        RichText::new(title).strong().color(theme::TEXT).size(13.0),
+                    );
+                    actions(ui);
+                });
+            });
+    });
+}
+
 #[derive(Debug, Clone, Copy)]
 struct SplitLayout {
     left_rect: Rect,
@@ -408,8 +449,10 @@ impl SplitLayout {
     }
 }
 
-fn show_output_history(ui: &mut Ui, state: &mut AppState, output: String) {
+fn show_output_history(ui: &mut Ui, state: &mut AppState) {
     let scroll_height = ui.available_height().max(0.0);
+    let output = state.output_history_text();
+    let runs = state.run_history.clone();
     state.output_scroll.show(
         egui::ScrollArea::vertical()
             .id_salt("output.history.scroll")
@@ -422,31 +465,68 @@ fn show_output_history(ui: &mut Ui, state: &mut AppState, output: String) {
         |ui| {
             ui.set_min_width(ui.available_width());
             ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                show_output_text(ui, output);
+                show_output_text(ui, &runs, &output);
             });
         },
     );
 }
 
-fn show_output_text(ui: &mut Ui, output: String) -> egui::Response {
+fn show_output_text(ui: &mut Ui, runs: &[RunRecord], output: &str) -> egui::Response {
     eguidev::id_with_meta(
         ui,
         "output.text",
         WidgetRole::Label,
         Some("output".to_string()),
-        Some(WidgetValue::Text(output.clone())),
+        Some(WidgetValue::Text(output.to_string())),
         |ui| {
-            ui.add(
-                egui::Label::new(
-                    RichText::new(output)
-                        .monospace()
-                        .color(theme::TEXT)
-                        .size(13.0),
-                )
-                .wrap(),
-            )
+            ui.vertical(|ui| {
+                ui.set_min_width(ui.available_width());
+                if runs.is_empty() {
+                    ui.add(
+                        egui::Label::new(RichText::new(output).color(theme::MUTED).size(13.0))
+                            .wrap(),
+                    );
+                    return;
+                }
+
+                for (index, run) in runs.iter().enumerate() {
+                    if index > 0 {
+                        ui.add_space(12.0);
+                    }
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(run.header_text())
+                                .strong()
+                                .color(run_header_color(run))
+                                .size(13.0),
+                        )
+                        .wrap(),
+                    );
+                    ui.add_space(3.0);
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(run.body_text())
+                                .monospace()
+                                .color(theme::TEXT)
+                                .size(13.0),
+                        )
+                        .wrap(),
+                    );
+                }
+            })
+            .response
         },
     )
+}
+
+fn run_header_color(run: &RunRecord) -> egui::Color32 {
+    if !run.is_ok() {
+        theme::BAD
+    } else if run.has_output() {
+        theme::GOOD
+    } else {
+        theme::WARN
+    }
 }
 
 impl eframe::App for SandboxApp {
@@ -711,30 +791,6 @@ fn paint_gutter(
             line_number += 1;
         }
     }
-}
-
-fn check_status_text(check_result: &CheckResult) -> RichText {
-    let errors = count_severity(check_result, Severity::Error);
-    let warnings = count_severity(check_result, Severity::Warning);
-    if errors > 0 {
-        RichText::new(format!("{errors} error{}", plural(errors))).color(theme::BAD)
-    } else if warnings > 0 {
-        RichText::new(format!("{warnings} warning{}", plural(warnings))).color(theme::WARN)
-    } else {
-        RichText::new("checked").color(theme::GOOD)
-    }
-}
-
-fn count_severity(check_result: &CheckResult, severity: Severity) -> usize {
-    check_result
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| diagnostic.severity == severity)
-        .count()
-}
-
-const fn plural(count: usize) -> &'static str {
-    if count == 1 { "" } else { "s" }
 }
 
 fn show_samples_menu(ui: &mut Ui, state: &mut AppState) {

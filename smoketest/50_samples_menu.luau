@@ -20,8 +20,8 @@ vp:widget_get(broken_index):click()
 expect_absent("samples.item.0")
 
 local editor = expect("editor.source", { value_text_contains = "width" })
-local status = expect("status.check", { value_text_contains = "2 errors" })
 local diagnostic = expect("diagnostics.0.message", { value_text_contains = "height" })
+local second_severity = expect("diagnostics.1.severity", { value_text_contains = "error" })
 
 -- Loading a sample must isolate it from previous runs.
 local output = vp:widget_get("output.text"):state()
@@ -32,7 +32,7 @@ assert(
 
 return {
     sample_count = #items,
-    status = status.value_text,
     diagnostic = diagnostic.value_text,
+    second_severity = second_severity.value_text,
     editor_len = string.len(editor.value_text),
 }
