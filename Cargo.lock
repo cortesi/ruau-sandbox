@@ -4105,22 +4105,22 @@ dependencies = [
 
 [[package]]
 name = "ruau"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d35aefcae5d227969122ba4cf4e7a6975e6a3111ae45417bddda707f80404f6"
+checksum = "0feb0b6e093dc25173e9d966233ce4a8f66bc0cb1797e66cbab1b89e1e4e7cff"
 dependencies = [
- "ruau-analysis 0.2.0",
- "ruau-ast 0.2.0",
- "ruau-bytecode 0.2.0",
- "ruau-decl 0.2.0",
- "ruau-fs 0.2.0",
- "ruau-host 0.2.0",
- "ruau-runner 0.2.0",
- "ruau-source 0.2.0",
- "ruau-surface 0.2.0",
- "ruau-typecheck 0.2.0",
- "ruau-vm 0.2.0",
- "ruau-vm-api 0.2.0",
+ "ruau-analysis 0.3.0",
+ "ruau-ast 0.3.0",
+ "ruau-bytecode 0.3.0",
+ "ruau-decl 0.3.0",
+ "ruau-fs 0.3.0",
+ "ruau-host 0.3.0",
+ "ruau-runner 0.3.0",
+ "ruau-source 0.3.0",
+ "ruau-surface 0.3.0",
+ "ruau-typecheck 0.3.0",
+ "ruau-vm 0.3.0",
+ "ruau-vm-api 0.3.0",
 ]
 
 [[package]]
@@ -4136,12 +4136,12 @@ dependencies = [
 
 [[package]]
 name = "ruau-analysis"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc101ae29515d5d292d515cfee9beae3bda2ae49d41c2546deff665f42f5b40e"
+checksum = "34af5ebb7a709a08a42e499f6d457d0a54294255a290162c76171e97a8b5bcc0"
 dependencies = [
- "ruau-ast 0.2.0",
- "ruau-source 0.2.0",
+ "ruau-ast 0.3.0",
+ "ruau-source 0.3.0",
  "serde_json",
 ]
 
@@ -4158,9 +4158,9 @@ dependencies = [
 
 [[package]]
 name = "ruau-ast"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f32985968919d46d1a546b59cb2e935c11364c638ac9550a99f7d7680d661aa"
+checksum = "a7365489dbc75eb90a703b1dfdaeced4b20a374080fcf9571ebd777128b79790"
 dependencies = [
  "serde",
  "serde_json",
@@ -4180,12 +4180,12 @@ dependencies = [
 
 [[package]]
 name = "ruau-bytecode"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75f14b16aead1023591c39ab26a6f42c8e86c00c93f4c5d26d56a1a7064198a3"
+checksum = "5b759b65d27e3cb8b6ecfbf5b4c94b5d883fbadc47f8dbb76afa5e81fe024f23"
 dependencies = [
  "foldhash 0.2.0",
- "ruau-ast 0.2.0",
+ "ruau-ast 0.3.0",
  "serde",
  "serde_json",
 ]
@@ -4198,9 +4198,9 @@ checksum = "41f214bc3592ab45613a3f8bb8bc54f503c21ed3e5a93be880e9522d3ba2547f"
 
 [[package]]
 name = "ruau-decl"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9df4578fb90f00a45cdd6d55e6e64084bf515c6e4ac25ed8ce3facbb1bdbfc9"
+checksum = "e75d734f4b39be62a379ea98d92d7645562be8ae92c21082f313916ac317b8e2"
 
 [[package]]
 name = "ruau-fs"
@@ -4216,13 +4216,13 @@ dependencies = [
 
 [[package]]
 name = "ruau-fs"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f53411c3220e906fabeffc71e95d44d95e77de05f89b4d505914635cb6e1e7a4"
+checksum = "c32c46f31270fc33dc6e89fa2ebe6431d8f5d4554a29a3f358b3e92dcdee7266"
 dependencies = [
- "ruau-analysis 0.2.0",
- "ruau-ast 0.2.0",
- "ruau-source 0.2.0",
+ "ruau-analysis 0.3.0",
+ "ruau-ast 0.3.0",
+ "ruau-source 0.3.0",
  "serde_json",
 ]
 
@@ -4244,16 +4244,16 @@ dependencies = [
 
 [[package]]
 name = "ruau-host"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd1669b6ccf9e3fdccb0e2eacf3e2fe5f7ed8f243f9f036883fa7474d7116d9e"
+checksum = "4e0149eb57fbd99cb22a1c78b823670f4effb34c6bf18ae64e2ff97aca1313d6"
 dependencies = [
- "ruau-bytecode 0.2.0",
- "ruau-decl 0.2.0",
- "ruau-source 0.2.0",
- "ruau-surface 0.2.0",
- "ruau-vm 0.2.0",
- "ruau-vm-api 0.2.0",
+ "ruau-bytecode 0.3.0",
+ "ruau-decl 0.3.0",
+ "ruau-source 0.3.0",
+ "ruau-surface 0.3.0",
+ "ruau-vm 0.3.0",
+ "ruau-vm-api 0.3.0",
  "serde_json",
  "tokio",
 ]
@@ -4280,20 +4280,20 @@ dependencies = [
 
 [[package]]
 name = "ruau-runner"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d069800ef2d2bae4a35f3b99e6852b86141a76b32a6ff0f25e81ff6a02b7c10"
+checksum = "22234726e7d765baeb9b412f23d7d163d061e413b400df49187fae297b6e9122"
 dependencies = [
  "blake3",
- "ruau-analysis 0.2.0",
- "ruau-ast 0.2.0",
- "ruau-bytecode 0.2.0",
- "ruau-decl 0.2.0",
- "ruau-source 0.2.0",
- "ruau-surface 0.2.0",
- "ruau-typecheck 0.2.0",
- "ruau-vm 0.2.0",
- "ruau-vm-api 0.2.0",
+ "ruau-analysis 0.3.0",
+ "ruau-ast 0.3.0",
+ "ruau-bytecode 0.3.0",
+ "ruau-decl 0.3.0",
+ "ruau-source 0.3.0",
+ "ruau-surface 0.3.0",
+ "ruau-typecheck 0.3.0",
+ "ruau-vm 0.3.0",
+ "ruau-vm-api 0.3.0",
  "serde_json",
  "tokio",
 ]
@@ -4302,7 +4302,7 @@ dependencies = [
 name = "ruau-sandbox"
 version = "0.1.0"
 dependencies = [
- "ruau 0.2.0",
+ "ruau 0.3.0",
 ]
 
 [[package]]
@@ -4331,9 +4331,9 @@ checksum = "2bfc6dc59239b36990c304bb235d319de8b91434dd02129c5902462f2ccdc59c"
 
 [[package]]
 name = "ruau-source"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "026e0f1275a01e57de1ebbcea145eef75b3324f4dd60c6856d9b4851058b2519"
+checksum = "bef16c683711a65cf77ba80cc702d35cb0f4bf21bbdd461f1d92c88c587c1d41"
 
 [[package]]
 name = "ruau-surface"
@@ -4353,18 +4353,18 @@ dependencies = [
 
 [[package]]
 name = "ruau-surface"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "427a00cc166b04bcf54f3e00044fd9b2608092ef5d2459ee83c48e093fde13f8"
+checksum = "072a2be7532a04811663ecd32137836ba03feb3e0e28ad09076bf23cea30aa56"
 dependencies = [
- "ruau-analysis 0.2.0",
- "ruau-ast 0.2.0",
- "ruau-bytecode 0.2.0",
- "ruau-decl 0.2.0",
- "ruau-source 0.2.0",
- "ruau-typecheck 0.2.0",
- "ruau-vm 0.2.0",
- "ruau-vm-api 0.2.0",
+ "ruau-analysis 0.3.0",
+ "ruau-ast 0.3.0",
+ "ruau-bytecode 0.3.0",
+ "ruau-decl 0.3.0",
+ "ruau-source 0.3.0",
+ "ruau-typecheck 0.3.0",
+ "ruau-vm 0.3.0",
+ "ruau-vm-api 0.3.0",
 ]
 
 [[package]]
@@ -4382,14 +4382,14 @@ dependencies = [
 
 [[package]]
 name = "ruau-typecheck"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "10939668b63de95602fff07f2633f942d332ca0a383b22f6973d99e8fdefde04"
+checksum = "8b3cfc0d39dbcb8ff6d31b6345c9a48d7b2422aba31bfc66220e8118bc55ba02"
 dependencies = [
  "foldhash 0.2.0",
- "ruau-analysis 0.2.0",
- "ruau-ast 0.2.0",
- "ruau-source 0.2.0",
+ "ruau-analysis 0.3.0",
+ "ruau-ast 0.3.0",
+ "ruau-source 0.3.0",
  "serde",
  "serde_json",
 ]
@@ -4417,18 +4417,18 @@ dependencies = [
 
 [[package]]
 name = "ruau-vm"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4299e6ad5eab56af22deafdb8614b7abf7c17898b006f1bfd1ecab408ff037f4"
+checksum = "8f8ed4c958f483be627f46b99c66fd9a8b9c6a969d82bcf4f0dc312275d3c804"
 dependencies = [
  "blake3",
  "foldhash 0.2.0",
  "pin-project-lite",
  "rmp-serde",
- "ruau-bytecode 0.2.0",
- "ruau-decl 0.2.0",
- "ruau-source 0.2.0",
- "ruau-vm-api 0.2.0",
+ "ruau-bytecode 0.3.0",
+ "ruau-decl 0.3.0",
+ "ruau-source 0.3.0",
+ "ruau-vm-api 0.3.0",
  "serde",
  "serde_json",
  "stacker",
@@ -4448,11 +4448,11 @@ dependencies = [
 
 [[package]]
 name = "ruau-vm-api"
-version = "0.2.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58e6f99dbca9978b3a1a991aae8dfdbe236b2efcc2ede4025f270c296540d0c8"
+checksum = "646b81e06aa7920f3081c4490041e6d0817190a406f3f4c4591f1a7dcb70c1f7"
 dependencies = [
- "ruau-decl 0.2.0",
+ "ruau-decl 0.3.0",
  "serde",
 ]
 
