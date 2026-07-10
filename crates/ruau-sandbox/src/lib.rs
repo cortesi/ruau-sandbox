@@ -12,11 +12,14 @@ use std::sync::{Arc, Mutex};
 use ruau::{
     bytecode::CompileError,
     source::{ModuleId, Source},
-    surface::{PrepareError, PreparedRunError, PreparedScript, Surface, VmConfig},
+    surface::{PrepareGraphError, PreparedGraphRunError, PreparedGraphScript, Surface, VmConfig},
     typecheck::{
-        DiagnosticView, Diagnostics, OneBasedDiagnosticLocation, Severity as RuauSeverity,
+        DiagnosticRecord, GraphDiagnostics, OneBasedDiagnosticLocation, Severity as RuauSeverity,
     },
-    vm::{CallOptions, ExecError, MarshaledPair, MarshaledValue, PrintSink, SinkQuota},
+    vm::{
+        CallOptions, ExecError, MarshaledPair, MarshaledValue, PrintSink, SinkQuota, TableLayout,
+        classify_marshaled_table,
+    },
 };
 
 const CHUNK_NAME: &str = "sandbox.luau";
@@ -302,8 +305,8 @@ pub fn execute(source: &str) -> RunResult {
     }
 }
 
-fn prepare(source: &str) -> Result<PreparedScript, PrepareError> {
-    Surface::new().prepare(Source::text(ModuleId::new(CHUNK_NAME), source))
+fn prepare(source: &str) -> Result<PreparedGraphScript, PrepareGraphError> {
+    Surface::new().prepare_graph(Source::text(ModuleId::new(CHUNK_NAME), source))
 }
 
 fn diagnostics_are_ok(diagnostics: &[Diagnostic]) -> bool {
@@ -312,8 +315,10 @@ fn diagnostics_are_ok(diagnostics: &[Diagnostic]) -> bool {
         .any(|diagnostic| diagnostic.severity == Severity::Error)
 }
 
-fn diagnostics_from_prepare_error(error: &PrepareError) -> Vec<Diagnostic> {
-    let mut diagnostics = diagnostics_from_ruau(error.diagnostics());
+fn diagnostics_from_prepare_error(error: &PrepareGraphError) -> Vec<Diagnostic> {
+    let mut diagnostics = error
+        .diagnostics()
+        .map_or_else(Vec::new, diagnostics_from_ruau);
     if let Some(compile_error) = error.compile_error() {
         diagnostics.push(diagnostic_from_compile_error(compile_error));
     }
@@ -326,17 +331,20 @@ fn diagnostics_from_prepare_error(error: &PrepareError) -> Vec<Diagnostic> {
     diagnostics
 }
 
-fn diagnostics_from_ruau(diagnostics: &Diagnostics) -> Vec<Diagnostic> {
-    diagnostics.views().map(diagnostic_from_view).collect()
+fn diagnostics_from_ruau(diagnostics: &GraphDiagnostics) -> Vec<Diagnostic> {
+    diagnostics
+        .records()
+        .map(|record| diagnostic_from_record(record.diagnostic))
+        .collect()
 }
 
-fn diagnostic_from_view(view: DiagnosticView<'_>) -> Diagnostic {
-    let span = source_span_from_location(view.primary_location);
-    let mut diagnostic = match view.severity {
-        RuauSeverity::Error => Diagnostic::error(span, view.message),
-        RuauSeverity::Warning | RuauSeverity::Info => Diagnostic::warning(span, view.message),
+fn diagnostic_from_record(record: DiagnosticRecord) -> Diagnostic {
+    let span = source_span_from_location(record.primary_location);
+    let mut diagnostic = match record.severity {
+        RuauSeverity::Error => Diagnostic::error(span, record.message),
+        RuauSeverity::Warning | RuauSeverity::Info => Diagnostic::warning(span, record.message),
     };
-    diagnostic.help = Some(view.category_label.into_owned());
+    diagnostic.help = Some(record.category_label);
     diagnostic
 }
 
@@ -358,12 +366,12 @@ fn diagnostic_from_compile_error(error: &CompileError) -> Diagnostic {
     Diagnostic::error(span, error.message().to_owned()).with_help(format!("{:?}", error.kind()))
 }
 
-fn diagnostic_from_run_error(error: &PreparedRunError) -> Diagnostic {
+fn diagnostic_from_run_error(error: &PreparedGraphRunError) -> Diagnostic {
     match error {
-        PreparedRunError::Load(error) => {
+        PreparedGraphRunError::Load(error) => {
             Diagnostic::error(SourceSpan::new(1, 1, 1), format!("load failed: {error}"))
         }
-        PreparedRunError::Exec(error) => diagnostic_from_exec_error(error),
+        PreparedGraphRunError::Exec(error) => diagnostic_from_exec_error(error),
     }
 }
 
@@ -395,6 +403,12 @@ fn runtime_message(error: &ExecError) -> String {
 }
 
 fn marshaled_table_string_field(pairs: &[MarshaledPair], field: &str) -> Option<String> {
+    if !matches!(
+        classify_marshaled_table(pairs),
+        TableLayout::StringMap { .. } | TableLayout::Mixed { .. }
+    ) {
+        return None;
+    }
     pairs.iter().find_map(|pair| {
         let MarshaledValue::String(key) = &pair.key else {
             return None;
@@ -466,7 +480,61 @@ fn prints_to_output(prints: Arc<Mutex<Vec<String>>>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use ruau::source::{ModuleSourceError, ModuleSourceResult, SourceMetadata, SyncModuleSource};
+
     use super::*;
+
+    #[derive(Default)]
+    struct MutableSource {
+        source: Mutex<Vec<u8>>,
+        epoch: AtomicU64,
+    }
+
+    impl MutableSource {
+        fn new(source: impl AsRef<[u8]>) -> Self {
+            Self {
+                source: Mutex::new(source.as_ref().to_vec()),
+                epoch: AtomicU64::new(1),
+            }
+        }
+
+        fn replace(&self, source: impl AsRef<[u8]>) {
+            *self.source.lock().expect("source mutex") = source.as_ref().to_vec();
+            self.epoch.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl SyncModuleSource for MutableSource {
+        fn resolve_sync(
+            &self,
+            _requester: Option<&ModuleId>,
+            request: &[u8],
+        ) -> ModuleSourceResult<ModuleId> {
+            if request == b"dep" {
+                return Ok(ModuleId::new("dep"));
+            }
+            Err(ModuleSourceError::MissingModule {
+                id: ModuleId::from(request),
+            })
+        }
+
+        fn read_sync(&self, id: &ModuleId) -> ModuleSourceResult<Vec<u8>> {
+            if id.as_str() == Some("dep") {
+                return Ok(self.source.lock().expect("source mutex").clone());
+            }
+            Err(ModuleSourceError::MissingModule { id: id.clone() })
+        }
+
+        fn metadata(&self, id: &ModuleId) -> SourceMetadata {
+            SourceMetadata::new(format!("{}.luau", id.to_lossy_string()))
+        }
+
+        fn epoch(&self) -> u64 {
+            self.epoch.load(Ordering::Relaxed)
+        }
+    }
 
     #[test]
     fn executes_default_program() {
@@ -572,6 +640,72 @@ print("magnitude = " .. magnitude({ x = 3, y = 4 }))"#,
         assert!(!result.is_ok());
         assert!(result.output.is_empty());
         assert!(result.diagnostics[0].message.contains("boom"));
+    }
+
+    #[test]
+    fn reports_structured_runtime_error_messages() {
+        let result = execute("error({ message = \"structured boom\" })");
+        assert!(!result.is_ok());
+        assert_eq!(result.diagnostics[0].message, "structured boom");
+    }
+
+    #[test]
+    fn reports_missing_dependency_diagnostics() {
+        let result = check("return require('missing')");
+        assert!(!result.is_ok());
+        assert!(
+            result.diagnostics[0].message.contains("missing"),
+            "{:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn prepared_graph_rejects_a_stale_source_epoch() {
+        let modules = Arc::new(MutableSource::new("return 41"));
+        let surface = Surface::builder()
+            .module_source(modules.clone())
+            .build()
+            .expect("surface validates");
+        let prepared = surface
+            .prepare_graph(Source::text(
+                ModuleId::new(CHUNK_NAME),
+                "return require('dep') + 1",
+            ))
+            .expect("graph prepares");
+        modules.replace("return 42");
+        let mut vm = surface
+            .vm_builder(&VmConfig::metered_untrusted(
+                0,
+                DEFAULT_GAS,
+                DEFAULT_MAX_MEMORY_BYTES,
+            ))
+            .build()
+            .expect("VM builds");
+
+        let error = prepared.run_in(&mut vm).expect_err("stale graph fails");
+        let diagnostic = diagnostic_from_run_error(&error);
+
+        assert!(diagnostic.message.contains("epoch"), "{diagnostic:?}");
+    }
+
+    #[test]
+    fn execution_is_bounded_by_gas() {
+        let result = execute("while true do end");
+        assert!(!result.is_ok());
+        assert!(
+            result.diagnostics[0].message.contains("budget"),
+            "{:?}",
+            result.diagnostics
+        );
+    }
+
+    #[test]
+    fn print_calls_are_bounded_by_quota() {
+        let result = execute("for _ = 1, 1025 do print('x') end");
+        assert!(result.is_ok(), "{:?}", result.diagnostics);
+        assert_eq!(result.output.lines().count(), DEFAULT_PRINT_MAX_CALLS + 1);
+        assert_eq!(result.output.lines().last(), Some("[output truncated]"));
     }
 
     #[test]
