@@ -305,7 +305,7 @@ pub fn execute(source: &str) -> RunResult {
 }
 
 fn prepare(source: &str) -> Result<PreparedGraph, PrepareGraphError> {
-    Surface::new().prepare_graph_blocking(Source::text(ModuleId::new(CHUNK_NAME), source))
+    Surface::new().prepare_graph_ready(Source::text(ModuleId::new(CHUNK_NAME), source))
 }
 
 fn diagnostics_are_ok(diagnostics: &[Diagnostic]) -> bool {
@@ -667,7 +667,7 @@ print("magnitude = " .. magnitude({ x = 3, y = 4 }))"#,
             .build()
             .expect("surface validates");
         let prepared = surface
-            .prepare_graph_blocking(Source::text(
+            .prepare_graph_ready(Source::text(
                 ModuleId::new(CHUNK_NAME),
                 "return require('dep') + 1",
             ))
