@@ -12,13 +12,13 @@ use std::sync::{Arc, Mutex};
 use ruau::{
     bytecode::CompileError,
     source::{ModuleId, Source},
-    surface::{PrepareGraphError, PreparedGraphRunError, PreparedGraphScript, Surface, VmConfig},
+    surface::{PrepareGraphError, PreparedGraph, PreparedGraphRunError, Surface, VmConfig},
     typecheck::{
         DiagnosticRecord, GraphDiagnostics, OneBasedDiagnosticLocation, Severity as RuauSeverity,
     },
     vm::{
-        CallOptions, ExecError, MarshaledPair, MarshaledValue, PrintSink, SinkQuota, TableLayout,
-        classify_marshaled_table,
+        Ambient, CallOptions, ExecError, Limits, MarshaledPair, PrintSink, SinkQuota, TableLayout,
+        ValueSnapshot, classify_marshaled_table,
     },
 };
 
@@ -266,10 +266,9 @@ pub fn execute(source: &str) -> RunResult {
 
     let surface = Surface::new();
     let mut vm = match surface
-        .vm_builder(&VmConfig::metered_untrusted(
-            0,
-            DEFAULT_GAS,
-            DEFAULT_MAX_MEMORY_BYTES,
+        .vm_builder(&VmConfig::untrusted(
+            Ambient::deterministic(0),
+            Limits::production(DEFAULT_GAS, DEFAULT_MAX_MEMORY_BYTES),
         ))
         .build()
     {
@@ -294,7 +293,7 @@ pub fn execute(source: &str) -> RunResult {
         },
     );
 
-    let diagnostics = match prepared.run_in_with_options(&mut vm, options) {
+    let diagnostics = match prepared.run_with_options(&mut vm, options) {
         Ok(_) => Vec::new(),
         Err(error) => vec![diagnostic_from_run_error(&error)],
     };
@@ -305,8 +304,8 @@ pub fn execute(source: &str) -> RunResult {
     }
 }
 
-fn prepare(source: &str) -> Result<PreparedGraphScript, PrepareGraphError> {
-    Surface::new().prepare_graph(Source::text(ModuleId::new(CHUNK_NAME), source))
+fn prepare(source: &str) -> Result<PreparedGraph, PrepareGraphError> {
+    Surface::new().prepare_graph_blocking(Source::text(ModuleId::new(CHUNK_NAME), source))
 }
 
 fn diagnostics_are_ok(diagnostics: &[Diagnostic]) -> bool {
@@ -391,12 +390,12 @@ fn runtime_message(error: &ExecError) -> String {
         return error.message();
     };
     match error.value() {
-        MarshaledValue::String(bytes) => String::from_utf8_lossy(bytes).into_owned(),
-        MarshaledValue::Nil => "nil".to_owned(),
-        MarshaledValue::Boolean(value) => value.to_string(),
-        MarshaledValue::Number(value) => value.to_string(),
-        MarshaledValue::Integer(value) => value.to_string(),
-        MarshaledValue::Table(pairs) => marshaled_table_string_field(pairs, "message")
+        ValueSnapshot::String(bytes) => String::from_utf8_lossy(bytes).into_owned(),
+        ValueSnapshot::Nil => "nil".to_owned(),
+        ValueSnapshot::Boolean(value) => value.to_string(),
+        ValueSnapshot::Number(value) => value.to_string(),
+        ValueSnapshot::Integer(value) => value.to_string(),
+        ValueSnapshot::Table(pairs) => marshaled_table_string_field(pairs, "message")
             .unwrap_or_else(|| "script raised table".to_owned()),
         value => format!("script raised {}", value.type_name()),
     }
@@ -410,13 +409,13 @@ fn marshaled_table_string_field(pairs: &[MarshaledPair], field: &str) -> Option<
         return None;
     }
     pairs.iter().find_map(|pair| {
-        let MarshaledValue::String(key) = &pair.key else {
+        let ValueSnapshot::String(key) = &pair.key else {
             return None;
         };
         if key.as_slice() != field.as_bytes() {
             return None;
         }
-        let MarshaledValue::String(value) = &pair.value else {
+        let ValueSnapshot::String(value) = &pair.value else {
             return None;
         };
         Some(String::from_utf8_lossy(value).into_owned())
@@ -482,7 +481,7 @@ fn prints_to_output(prints: Arc<Mutex<Vec<String>>>) -> String {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use ruau::source::{ModuleSourceError, ModuleSourceResult, SourceMetadata, SyncModuleSource};
+    use ruau::source::{SourceError, SourceMetadata, SourceResult, SyncSourceProvider};
 
     use super::*;
 
@@ -506,25 +505,25 @@ mod tests {
         }
     }
 
-    impl SyncModuleSource for MutableSource {
+    impl SyncSourceProvider for MutableSource {
         fn resolve_sync(
             &self,
             _requester: Option<&ModuleId>,
             request: &[u8],
-        ) -> ModuleSourceResult<ModuleId> {
+        ) -> SourceResult<ModuleId> {
             if request == b"dep" {
                 return Ok(ModuleId::new("dep"));
             }
-            Err(ModuleSourceError::MissingModule {
+            Err(SourceError::MissingModule {
                 id: ModuleId::from(request),
             })
         }
 
-        fn read_sync(&self, id: &ModuleId) -> ModuleSourceResult<Vec<u8>> {
+        fn read_sync(&self, id: &ModuleId) -> SourceResult<Vec<u8>> {
             if id.as_str() == Some("dep") {
                 return Ok(self.source.lock().expect("source mutex").clone());
             }
-            Err(ModuleSourceError::MissingModule { id: id.clone() })
+            Err(SourceError::MissingModule { id: id.clone() })
         }
 
         fn metadata(&self, id: &ModuleId) -> SourceMetadata {
@@ -668,22 +667,21 @@ print("magnitude = " .. magnitude({ x = 3, y = 4 }))"#,
             .build()
             .expect("surface validates");
         let prepared = surface
-            .prepare_graph(Source::text(
+            .prepare_graph_blocking(Source::text(
                 ModuleId::new(CHUNK_NAME),
                 "return require('dep') + 1",
             ))
             .expect("graph prepares");
         modules.replace("return 42");
         let mut vm = surface
-            .vm_builder(&VmConfig::metered_untrusted(
-                0,
-                DEFAULT_GAS,
-                DEFAULT_MAX_MEMORY_BYTES,
+            .vm_builder(&VmConfig::untrusted(
+                Ambient::deterministic(0),
+                Limits::production(DEFAULT_GAS, DEFAULT_MAX_MEMORY_BYTES),
             ))
             .build()
             .expect("VM builds");
 
-        let error = prepared.run_in(&mut vm).expect_err("stale graph fails");
+        let error = prepared.run(&mut vm).expect_err("stale graph fails");
         let diagnostic = diagnostic_from_run_error(&error);
 
         assert!(diagnostic.message.contains("epoch"), "{diagnostic:?}");
