@@ -18,7 +18,7 @@ use xshell::{Shell, cmd};
 
 const DIST_HOST: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 1);
 const DEFAULT_DIST_PORT: u16 = 8000;
-const WASM_BINDGEN_VERSION: &str = "0.2.125";
+const WASM_BINDGEN_VERSION: &str = "0.2.126";
 
 #[derive(Debug, Parser)]
 #[command(name = "xtask")]
