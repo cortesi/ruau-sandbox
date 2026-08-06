@@ -20,8 +20,8 @@ use egui::{
 };
 use eguidev::{
     DevMcp, DevUiExt, DiagnosticError, FixtureError, FixtureResponse, FixtureSpec, FrameGuard,
-    RoleState, WidgetMeta, WidgetRole, WidgetValue, capture_layout, take_widget_value_override,
-    track_response_full,
+    WidgetMeta, WidgetRole, WidgetRoleMeta, WidgetValue, capture_layout,
+    take_widget_value_override, track_response,
 };
 #[cfg(all(not(target_arch = "wasm32"), feature = "devtools"))]
 use eguidev_runtime::attach as attach_runtime;
@@ -362,11 +362,11 @@ impl SandboxApp {
             .rect_filled(layout.divider_rect, 0.0, theme::BACKGROUND);
         ui.painter()
             .rect_filled(line, 0.0, color.gamma_multiply(0.8));
-        track_response_full(
+        track_response(
             "layout.divider",
             &response,
             WidgetMeta {
-                role: WidgetRole::Separator,
+                role: WidgetRoleMeta::Plain(WidgetRole::Separator),
                 label: Some("pane divider".to_string()),
                 layout: Some(capture_layout(ui, &response)),
                 visible: ui.is_visible() && ui.is_rect_visible(response.rect),
@@ -472,10 +472,10 @@ fn show_output_history(ui: &mut Ui, state: &mut AppState) {
 }
 
 fn show_output_text(ui: &mut Ui, runs: &[RunRecord], output: &str) -> egui::Response {
-    eguidev::id_with_meta(
+    eguidev::track_widget_with_meta(
         ui,
         "output.text",
-        WidgetRole::Label,
+        WidgetRoleMeta::Plain(WidgetRole::Label),
         Some("output".to_string()),
         Some(WidgetValue::Text(output.to_string())),
         |ui| {
@@ -723,17 +723,16 @@ fn show_editor_text(
         let response = output.response.response.clone();
 
         paint_gutter(ui, origin, gutter_width, &output, marks, &font);
-        track_response_full(
+        track_response(
             "editor.source",
             &response,
             WidgetMeta {
-                role: WidgetRole::TextEdit,
-                label: Some("source".to_string()),
-                value: Some(WidgetValue::Text(source.clone())),
-                role_state: Some(RoleState::TextEdit {
+                role: WidgetRoleMeta::TextEdit {
                     multiline: true,
                     password: false,
-                }),
+                },
+                label: Some("source".to_string()),
+                value: Some(WidgetValue::Text(source.clone())),
                 layout: Some(capture_layout(ui, &response)),
                 visible: ui.is_visible() && ui.is_rect_visible(response.rect),
                 ..WidgetMeta::default()
