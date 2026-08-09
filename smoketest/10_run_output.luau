@@ -1,8 +1,9 @@
-fixture("sandbox.default")
-local vp = root()
+eguidev.fixture("sandbox.default")
+local vp = eguidev.root
 
-vp:widget_get("action.run"):click()
-local output = expect("output.text", { value_text_contains = "area = 42" })
+eguidev.widget("action.run"):click()
+local output = eguidev.widget("output.text"):expect({ value_text_contains = "area = 42" })
+assert(output ~= nil)
 assert(output ~= nil, "run should render default program output")
 
 return {

@@ -1,5 +1,5 @@
-fixture("sandbox.default")
-local vp = root()
+eguidev.fixture("sandbox.default")
+local vp = eguidev.root
 
 local source = table.concat({
     "--!strict",
@@ -9,30 +9,35 @@ local source = table.concat({
     "",
     "print(\"value = \" .. add(10, 5))",
 }, "\n")
-local editor = vp:widget_get("editor.source")
+local editor = eguidev.widget("editor.source")
 editor:set_value(source)
 
-local edited = expect("editor.source", { value = source })
+local edited = eguidev.widget("editor.source"):expect({ value = source })
+assert(edited ~= nil)
 assert(edited.value_text == source, "editor should accept scripted source replacement")
 assert(
     string.find(edited.value_text, "\nfunction add", 1, true) ~= nil,
     "editor should preserve top-level Luau function declarations"
 )
 
-vp:widget_get("action.run"):click()
-local output = expect("output.text", { value_text_contains = "value = 15" })
+eguidev.widget("action.run"):click()
+local output = eguidev.widget("output.text"):expect({ value_text_contains = "value = 15" })
+assert(output ~= nil)
 assert(output ~= nil, "run should render output from edited source")
 
 local broken = "--!strict\nprint(missing)"
-editor = vp:widget_get("editor.source")
+editor = eguidev.widget("editor.source")
 editor:set_value(broken)
 
-local diagnostic = expect("diagnostics.0.message", { value_text_contains = "missing" })
+local diagnostic = eguidev.widget("diagnostics.0.message"):expect({ value_text_contains = "missing" })
+assert(diagnostic ~= nil)
 assert(diagnostic ~= nil, "diagnostic should name the missing value")
 
-local severity = vp:widget_get("diagnostics.0.severity"):state()
+local severity = eguidev.widget("diagnostics.0.severity"):state()
+assert(severity ~= nil)
 assert(severity.value_text == "error", "diagnostic card should show its severity")
-local location = vp:widget_get("diagnostics.0.location"):state()
+local location = eguidev.widget("diagnostics.0.location"):state()
+assert(location ~= nil)
 assert(
     string.find(location.value_text, "line 2", 1, true) ~= nil,
     "diagnostic card should show the source line"

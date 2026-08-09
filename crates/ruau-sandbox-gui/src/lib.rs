@@ -601,9 +601,9 @@ fn build_devmcp(enable_mcp: bool, state: &Arc<Mutex<AppState>>) -> DevMcp {
     let state_for_diagnostic = Arc::clone(state);
     let devmcp = DevMcp::new()
         .fixtures(vec![
-            FixtureSpec::new("sandbox.default", "Default checked source.").anchor("editor.source"),
+            FixtureSpec::new("sandbox.default", "Default checked source.").ready("editor.source"),
             FixtureSpec::new("sandbox.error", "Broken sample with undefined values.")
-                .anchor("diagnostics.0"),
+                .ready("diagnostics.0"),
         ])
         .on_fixture_runtime(move |call| {
             let mut state = state_for_handler

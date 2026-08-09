@@ -11,22 +11,22 @@ local function find_dump_widget(node: any, id: string): any?
     return nil
 end
 
-fixture("sandbox.default")
-local vp = root()
-expect("editor.source", { visible = true })
-vp:widget_get("action.run"):click()
-expect("output.text", { value_text_contains = "area = 42" })
-wait_until(function()
-    return diagnostic("sandbox.state").history.runs == 1
+eguidev.fixture("sandbox.default")
+local vp = eguidev.root
+eguidev.widget("editor.source"):expect({ visible = true })
+eguidev.widget("action.run"):click()
+eguidev.widget("output.text"):expect({ value_text_contains = "area = 42" })
+eguidev.wait(function()
+    return eguidev.diagnostic("sandbox.state").history.runs == 1
 end)
 
-local sandbox_state = diagnostic("sandbox.state") :: any
+local sandbox_state = eguidev.diagnostic("sandbox.state") :: any
 assert(sandbox_state.check.ok == true, "sandbox diagnostic should report a clean check")
 assert(sandbox_state.run.ok == true, "sandbox diagnostic should report a clean run")
 assert(sandbox_state.run.has_output == true, "sandbox diagnostic should report run output")
 assert(sandbox_state.history.runs == 1, "sandbox diagnostic should count run history")
 
-local left_tree = dump({ root = "layout.left_pane", fields = "full" }) :: any
+local left_tree = eguidev.dump({ root = eguidev.widget("layout.left_pane"), fields = "full" }) :: any
 assert(#left_tree.viewports == 1, "left-pane dump should include one viewport")
 assert(#left_tree.viewports[1].widgets == 1, "left-pane dump should be rooted at layout.left_pane")
 
@@ -40,7 +40,7 @@ assert(
     "source editor text should be preserved in the dump"
 )
 
-local right_tree = dump({ root = "layout.right_pane", fields = "full" }) :: any
+local right_tree = eguidev.dump({ root = eguidev.widget("layout.right_pane"), fields = "full" }) :: any
 assert(#right_tree.viewports == 1, "right-pane dump should include one viewport")
 assert(#right_tree.viewports[1].widgets == 1, "right-pane dump should be rooted at layout.right_pane")
 
@@ -54,7 +54,7 @@ local output = find_dump_widget(right_pane, "output.text")
 assert(output ~= nil, "right-pane dump should include output text")
 assert(string.find(output.value_text, "area = 42", 1, true) ~= nil, "dump should include run output")
 
-local text = dump_text({ root = "layout.right_pane", include_invisible = false })
+local text = eguidev.dump_text({ root = eguidev.widget("layout.right_pane"), include_invisible = false })
 assert(string.find(text, "output.text", 1, true) ~= nil, "text dump should include output text")
 
 return {

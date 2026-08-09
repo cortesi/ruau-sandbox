@@ -1,10 +1,11 @@
-fixture("sandbox.default")
-local vp = root()
+eguidev.fixture("sandbox.default")
+local vp = eguidev.root
 
 -- The keyboard shortcut runs the program.
-vp:widget_get("editor.source"):click()
+eguidev.widget("editor.source"):click()
 vp:key("cmd-enter")
-local output = expect("output.text", { value_text_contains = "area = 42" })
+local output = eguidev.widget("output.text"):expect({ value_text_contains = "area = 42" })
+assert(output ~= nil)
 assert(
     string.find(output.value_text, "Run 1", 1, true) ~= nil,
     "run history should record the shortcut-triggered run"
@@ -12,13 +13,15 @@ assert(
 assert(string.find(output.value_text, " - ok", 1, true) == nil, "run history should not render ok text")
 
 -- Clear discards the run history and resets the placeholder.
-vp:widget_get("output.clear"):click()
-local cleared = expect("output.text", { value_text_contains = "Run the program" })
+eguidev.widget("output.clear"):click()
+local cleared = eguidev.widget("output.text"):expect({ value_text_contains = "Run the program" })
+assert(cleared ~= nil)
 assert(cleared ~= nil, "clear should reset the output panel")
 
 -- Run numbering restarts after a clear.
-vp:widget_get("action.run"):click()
-local rerun = expect("output.text", { value_text_contains = "Run 1" })
+eguidev.widget("action.run"):click()
+local rerun = eguidev.widget("output.text"):expect({ value_text_contains = "Run 1" })
+assert(rerun ~= nil)
 assert(string.find(rerun.value_text, " - ok", 1, true) == nil, "rerun history should not render ok text")
 
 return {
