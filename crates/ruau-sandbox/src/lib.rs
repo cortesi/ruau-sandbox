@@ -268,7 +268,7 @@ pub fn execute(source: &str) -> RunResult {
     let mut vm = match surface
         .vm_builder(&VmConfig::untrusted(
             Ambient::deterministic(0),
-            Limits::production(DEFAULT_GAS, DEFAULT_MAX_MEMORY_BYTES),
+            Limits::metered(DEFAULT_GAS, DEFAULT_MAX_MEMORY_BYTES),
         ))
         .build()
     {
@@ -676,7 +676,7 @@ print("magnitude = " .. magnitude({ x = 3, y = 4 }))"#,
         let mut vm = surface
             .vm_builder(&VmConfig::untrusted(
                 Ambient::deterministic(0),
-                Limits::production(DEFAULT_GAS, DEFAULT_MAX_MEMORY_BYTES),
+                Limits::metered(DEFAULT_GAS, DEFAULT_MAX_MEMORY_BYTES),
             ))
             .build()
             .expect("VM builds");
