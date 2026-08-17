@@ -12,6 +12,7 @@ workspace = true
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+doctest = false
 
 [[bin]]
 name = "ruau-sandbox-gui"
