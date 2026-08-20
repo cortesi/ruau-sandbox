@@ -526,11 +526,11 @@ mod tests {
             Err(SourceError::MissingModule { id: id.clone() })
         }
 
-        fn metadata(&self, id: &ModuleId) -> SourceMetadata {
+        fn metadata_sync(&self, id: &ModuleId) -> SourceMetadata {
             SourceMetadata::new(format!("{}.luau", id.to_lossy_string()))
         }
 
-        fn epoch(&self) -> u64 {
+        fn epoch_sync(&self) -> u64 {
             self.epoch.load(Ordering::Relaxed)
         }
     }
