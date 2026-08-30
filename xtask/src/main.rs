@@ -29,10 +29,6 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum CommandName {
-    /// Format the workspace and run clippy.
-    Tidy,
-    /// Run the workspace tests.
-    Test,
     /// Web build and serve tasks.
     #[command(subcommand)]
     Web(WebCommand),
@@ -99,8 +95,6 @@ fn run() -> Result<()> {
     let paths = RepoPaths::discover()?;
 
     match cli.command {
-        CommandName::Tidy => tidy(&paths),
-        CommandName::Test => test(&paths),
         CommandName::Web(command) => match command {
             WebCommand::Setup => web_setup(&paths),
             WebCommand::Serve => web_serve(&paths),
@@ -108,40 +102,6 @@ fn run() -> Result<()> {
             WebCommand::ServeDist { port } => web_serve_dist(&paths, port),
         },
     }
-}
-
-fn tidy(paths: &RepoPaths) -> Result<()> {
-    format_workspace(paths)?;
-    lint_workspace(paths)?;
-    format_workspace(paths)?;
-    Ok(())
-}
-
-fn test(paths: &RepoPaths) -> Result<()> {
-    let sh = repo_shell(paths)?;
-    cmd!(sh, "cargo test --all").run()?;
-    Ok(())
-}
-
-fn format_workspace(paths: &RepoPaths) -> Result<()> {
-    let sh = repo_shell(paths)?;
-    let config = paths.root.join("rustfmt-nightly.toml");
-    if config.is_file() {
-        cmd!(sh, "cargo +nightly fmt --all -- --config-path {config}").run()?;
-    } else {
-        cmd!(sh, "cargo +nightly fmt --all").run()?;
-    }
-    Ok(())
-}
-
-fn lint_workspace(paths: &RepoPaths) -> Result<()> {
-    let sh = repo_shell(paths)?;
-    cmd!(
-        sh,
-        "cargo clippy -q --fix --all --all-targets --all-features --allow-dirty --tests --examples"
-    )
-    .run()?;
-    Ok(())
 }
 
 fn repo_shell(paths: &RepoPaths) -> Result<Shell> {

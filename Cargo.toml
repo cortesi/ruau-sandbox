@@ -14,6 +14,11 @@ default-members = ["crates/ruau-sandbox-gui"]
 ruau-sandbox = { path = "crates/ruau-sandbox", version = "0.1.0" }
 ruau-sandbox-gui = { path = "crates/ruau-sandbox-gui", version = "0.1.0" }
 
+[workspace.metadata.nanocode]
+schema-version = 1
+requires-nanocode = ">=0.1, <0.2"
+features = "default"
+
 [workspace.lints.rust]
 missing_docs = "warn"
 
@@ -48,5 +53,9 @@ strip = "debuginfo"
 lto = true
 codegen-units = 1
 
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.dev.package."*"]
+debug = false
 opt-level = 3
