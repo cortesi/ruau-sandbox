@@ -43,6 +43,6 @@ cargo xtask web serve-dist 8000
 ## Quality
 
 ```sh
-cargo xtask tidy
-cargo xtask test
+ncode tidy
+ncode test
 ```
