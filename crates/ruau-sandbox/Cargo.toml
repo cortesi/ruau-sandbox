@@ -13,4 +13,4 @@ doctest = false
 workspace = true
 
 [dependencies]
-ruau = { version = "0.4.0", default-features = false }
+ruau = { path = "../../../ruau/crates/ruau", default-features = false }
