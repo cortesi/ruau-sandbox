@@ -2,10 +2,7 @@
 
 #![allow(clippy::missing_docs_in_private_items)]
 
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::{fs, path::PathBuf};
 
@@ -14,10 +11,10 @@ use anyhow::Context;
 #[cfg(not(target_arch = "wasm32"))]
 use clap::Parser;
 use egui::{
-    CursorIcon, FontFamily, FontId, Galley, Key, KeyboardShortcut, Margin, Modifiers, Rect,
-    RichText, Sense, Stroke, TextBuffer, TextEdit, TextStyle, Ui, UiBuilder,
-    text_edit::TextEditOutput,
+    CursorIcon, Galley, Key, KeyboardShortcut, Margin, Modifiers, Rect, RichText, Sense, Stroke,
+    TextBuffer, TextEdit, TextStyle, Ui, UiBuilder, text_edit::TextEditOutput,
 };
+use eguicode::highlight::Language;
 use eguidev::{
     DevMcp, DevUiExt, DiagnosticError, FixtureError, FixtureResponse, FixtureSpec, FrameGuard,
     WidgetMeta, WidgetRole, WidgetRoleMeta, WidgetValue, capture_layout,
@@ -30,13 +27,12 @@ use ruau_sandbox::DEFAULT_SOURCE;
 use ruau_sandbox::{Diagnostic, SAMPLES, Severity, sample_by_name};
 use serde_json::{Value, json};
 
+mod highlight;
 mod state;
-mod syntax;
 mod theme;
 
 pub use state::AppState;
 use state::RunRecord;
-use syntax::{LineMark, collect_line_marks, highlight_source};
 
 /// Keyboard shortcut that runs the current program.
 const RUN_SHORTCUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::Enter);
@@ -171,12 +167,9 @@ impl SandboxApp {
                 source_changed = true;
             }
 
-            let marks = collect_line_marks(&state.check_result.diagnostics);
-            let mut layouter = |ui: &Ui, text: &dyn TextBuffer, wrap_width: f32| -> Arc<Galley> {
-                let mut job = highlight_source(text.as_str(), &marks);
-                job.wrap.max_width = wrap_width;
-                ui.fonts_mut(|fonts| fonts.layout_job(job))
-            };
+            let code_theme = highlight::code_theme();
+            let marks = highlight::diagnostics_to_marks(&state.check_result.diagnostics);
+            let mut layouter = eguicode::layouter(&code_theme, Language::Luau, &marks);
 
             let line_count = state.source.lines().count().max(1);
             let editor_height = ui.available_height().max(0.0);
@@ -196,7 +189,15 @@ impl SandboxApp {
                     "editor.scroll",
                     |ui, viewport| {
                         ui.set_min_width(ui.available_width());
-                        show_editor_text(ui, source, viewport, &marks, line_count, &mut layouter)
+                        show_editor_text(
+                            ui,
+                            source,
+                            viewport,
+                            &code_theme,
+                            &marks,
+                            line_count,
+                            &mut layouter,
+                        )
                     },
                 )
                 .inner;
@@ -681,115 +682,86 @@ fn count_diagnostic_severity(diagnostics: &[Diagnostic], severity: Severity) -> 
         .count()
 }
 
-/// Font used for editor source text and the line-number gutter.
-fn editor_font() -> FontId {
-    FontId::new(13.0, FontFamily::Monospace)
-}
-
 /// Render the source text editor with a line-number gutter inside the editor
 /// scroll viewport.
 fn show_editor_text(
     ui: &mut Ui,
     source: &mut String,
     viewport: Rect,
-    marks: &BTreeMap<usize, LineMark>,
+    code_theme: &eguicode::CodeTheme,
+    marks: &eguicode::Marks,
     line_count: usize,
     layouter: &mut dyn FnMut(&Ui, &dyn TextBuffer, f32) -> Arc<Galley>,
 ) -> egui::Response {
-    let font = editor_font();
     let digits = line_count.max(10).to_string().len();
-    let glyph_width = ui.fonts_mut(|fonts| fonts.glyph_width(&font, '0'));
+    let glyph_width = ui.fonts_mut(|fonts| fonts.glyph_width(&code_theme.gutter_font, '0'));
     let gutter_width = (digits as f32).mul_add(glyph_width, GUTTER_PADDING * 2.0);
-    let origin = ui.cursor().min;
+    // egui's `Margin` fields are `i8`; round up so the gutter is never too
+    // narrow, then reuse the rounded value for the chrome painted below so
+    // the fill and divider line up with where the margin actually put the
+    // text.
+    let gutter_margin = gutter_width.ceil().clamp(0.0, 127.0) as i8;
+    let gutter_width = f32::from(gutter_margin);
 
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 0.0;
-        ui.add_space(gutter_width);
-        let output = ui
-            .allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), viewport.height()),
-                egui::Layout::centered_and_justified(egui::Direction::TopDown),
-                |ui| {
-                    TextEdit::multiline(source)
-                        .font(TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .desired_rows(1)
-                        .code_editor()
-                        .layouter(layouter)
-                        .show(ui)
-                },
-            )
-            .inner;
-        let response = output.response.response.clone();
-
-        paint_gutter(ui, origin, gutter_width, &output, marks, &font);
-        track_response(
-            "editor.source",
-            &response,
-            WidgetMeta {
-                role: WidgetRoleMeta::TextEdit {
-                    multiline: true,
-                    password: false,
-                },
-                label: Some("source".to_string()),
-                value: Some(WidgetValue::Text(source.clone())),
-                layout: Some(capture_layout(ui, &response)),
-                visible: ui.is_visible() && ui.is_rect_visible(response.rect),
-                ..WidgetMeta::default()
+    let output = ui
+        .allocate_ui_with_layout(
+            egui::vec2(ui.available_width(), viewport.height()),
+            egui::Layout::centered_and_justified(egui::Direction::TopDown),
+            |ui| {
+                TextEdit::multiline(source)
+                    .font(TextStyle::Monospace)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(1)
+                    .code_editor()
+                    .margin(Margin {
+                        left: gutter_margin,
+                        right: 4,
+                        top: 2,
+                        bottom: 2,
+                    })
+                    .layouter(layouter)
+                    .show(ui)
             },
-        );
-        response
-    })
-    .inner
+        )
+        .inner;
+    let response = output.response.response.clone();
+
+    paint_gutter_chrome(ui, &output, gutter_width);
+    eguicode::paint_gutter(ui, &output, code_theme, marks);
+    track_response(
+        "editor.source",
+        &response,
+        WidgetMeta {
+            role: WidgetRoleMeta::TextEdit {
+                multiline: true,
+                password: false,
+            },
+            label: Some("source".to_string()),
+            value: Some(WidgetValue::Text(source.clone())),
+            layout: Some(capture_layout(ui, &response)),
+            visible: ui.is_visible() && ui.is_rect_visible(response.rect),
+            ..WidgetMeta::default()
+        },
+    );
+    response
 }
 
-/// Paint line numbers alongside the editor galley, marking diagnostic lines.
-fn paint_gutter(
-    ui: &Ui,
-    origin: egui::Pos2,
-    gutter_width: f32,
-    output: &TextEditOutput,
-    marks: &BTreeMap<usize, LineMark>,
-    font: &FontId,
-) {
-    let painter = ui.painter();
+/// Paints the gutter's background fill and divider line. `eguicode`'s own
+/// `paint_gutter` only draws the numbers; the sandbox keeps its own chrome
+/// around them.
+fn paint_gutter_chrome(ui: &Ui, output: &TextEditOutput, gutter_width: f32) {
     let editor_rect = output.response.response.rect;
     let gutter_rect = Rect::from_min_max(
-        egui::pos2(origin.x, editor_rect.min.y),
-        egui::pos2(origin.x + gutter_width, editor_rect.max.y),
+        editor_rect.min,
+        egui::pos2(editor_rect.min.x + gutter_width, editor_rect.max.y),
     );
+    let painter = ui.painter();
     painter.rect_filled(gutter_rect, 0.0, theme::EDITOR_BG);
     painter.vline(
         gutter_rect.max.x - 1.0,
         gutter_rect.y_range(),
         Stroke::new(1.0, theme::DIVIDER.gamma_multiply(0.6)),
     );
-
-    let number_x = gutter_rect.max.x - GUTTER_PADDING;
-    let mut line_number = 1_usize;
-    let mut is_line_start = true;
-    for row in &output.galley.rows {
-        if is_line_start {
-            let color = marks.get(&line_number).map_or(theme::GUTTER, |mark| {
-                if mark.has_error {
-                    theme::BAD
-                } else {
-                    theme::WARN
-                }
-            });
-            painter.text(
-                egui::pos2(number_x, output.galley_pos.y + row.pos.y),
-                egui::Align2::RIGHT_TOP,
-                line_number,
-                font.clone(),
-                color,
-            );
-        }
-        is_line_start = row.ends_with_newline;
-        if row.ends_with_newline {
-            line_number += 1;
-        }
-    }
 }
 
 fn show_samples_menu(ui: &mut Ui, state: &mut AppState) {
@@ -852,74 +824,18 @@ fn show_diagnostic(ui: &mut Ui, index: usize, diagnostic: &Diagnostic) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     #[cfg(not(target_arch = "wasm32"))]
     use std::{env, fs, path::Path, process};
 
     #[cfg(not(target_arch = "wasm32"))]
     use clap::Parser;
-    use egui::{Color32, Stroke};
-    use ruau_sandbox::check;
 
+    use super::AppState;
     #[cfg(not(target_arch = "wasm32"))]
     use super::NativeArgs;
-    use super::{AppState, collect_line_marks, highlight_source, theme};
 
-    #[test]
-    fn syntax_highlighting_classifies_luau_tokens() {
-        let job = highlight_source(
-            "local n = 42\nprint(\"value = \" .. n) -- output\n",
-            &BTreeMap::new(),
-        );
-        let colors = job
-            .sections
-            .iter()
-            .map(|section| section.format.color)
-            .collect::<Vec<_>>();
-
-        assert!(colors.contains(&theme::KEYWORD));
-        assert!(colors.contains(&theme::NUMBER));
-        assert!(colors.contains(&theme::STRING));
-        assert!(colors.contains(&theme::MACRO));
-        assert!(colors.contains(&theme::COMMENT));
-    }
-
-    #[test]
-    fn comments_end_at_the_line_break() {
-        let job = highlight_source("-- note\nlocal x = 1", &BTreeMap::new());
-        let colors = job
-            .sections
-            .iter()
-            .map(|section| section.format.color)
-            .collect::<Vec<_>>();
-
-        assert!(colors.contains(&theme::COMMENT));
-        assert!(
-            colors.contains(&theme::KEYWORD),
-            "keyword after a comment line should not be swallowed by the comment"
-        );
-    }
-
-    #[test]
-    fn diagnostics_mark_error_lines() {
-        let source = "--!strict\nprint(missing)";
-        let marks = collect_line_marks(&check(source).diagnostics);
-        let job = highlight_source(source, &marks);
-
-        assert_eq!(job.text, source, "layout must reconstruct the source");
-        assert!(
-            job.sections
-                .iter()
-                .any(|section| section.format.background != Color32::TRANSPARENT),
-            "error line should have a background tint"
-        );
-        assert!(
-            job.sections
-                .iter()
-                .any(|section| section.format.underline != Stroke::NONE),
-            "error span should be underlined"
-        );
-    }
+    // Syntax highlighting and diagnostic-mark tests live in `highlight.rs`,
+    // beside the code they exercise.
 
     #[test]
     fn app_state_checks_initial_source() {

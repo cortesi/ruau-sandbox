@@ -1193,6 +1193,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "eguicode"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "ruau-highlight",
+]
+
+[[package]]
 name = "eguidev"
 version = "0.1.0"
 dependencies = [
@@ -3138,6 +3146,7 @@ dependencies = [
  "libc",
  "ruau-bytecode",
  "ruau-declaration",
+ "ruau-highlight",
  "ruau-source",
  "ruau-syntax",
  "ruau-typecheck",
@@ -3165,6 +3174,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ruau-highlight"
+version = "0.1.0"
+dependencies = [
+ "ruau-syntax",
+]
+
+[[package]]
 name = "ruau-sandbox"
 version = "0.1.0"
 dependencies = [
@@ -3180,6 +3196,7 @@ dependencies = [
  "console_error_panic_hook",
  "eframe",
  "egui",
+ "eguicode",
  "eguidev",
  "eguidev_runtime",
  "ruau-sandbox",
