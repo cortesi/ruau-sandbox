@@ -3,7 +3,7 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use std::{
-    fs,
+    env, fs,
     fs::File,
     io::{Cursor, ErrorKind},
     net::{Ipv4Addr, SocketAddrV4},
@@ -113,7 +113,7 @@ fn repo_shell(paths: &RepoPaths) -> Result<Shell> {
 fn web_setup(paths: &RepoPaths) -> Result<()> {
     let sh = repo_shell(paths)?;
     cmd!(sh, "rustup target add wasm32-unknown-unknown").run()?;
-    cmd!(sh, "cargo install -f wasm-server-runner").run()?;
+    cargo_command(cmd!(sh, "cargo install -f wasm-server-runner")).run()?;
     install_wasm_bindgen_cli(paths)?;
     println!("Setup complete.");
     Ok(())
@@ -131,20 +131,20 @@ fn web_serve(paths: &RepoPaths) -> Result<()> {
         "WASM_SERVER_RUNNER_CUSTOM_INDEX_HTML",
         &paths.dev_index_html,
     );
-    cmd!(
+    cargo_command(cmd!(
         sh,
         "cargo run --target wasm32-unknown-unknown --bin ruau-sandbox-web"
-    )
+    ))
     .run()?;
     Ok(())
 }
 
 fn web_build(paths: &RepoPaths) -> Result<()> {
     let sh = repo_shell(paths)?;
-    cmd!(
+    cargo_command(cmd!(
         sh,
         "cargo build --target wasm32-unknown-unknown --bin ruau-sandbox-web --profile wasm-release"
-    )
+    ))
     .run()?;
 
     ensure_raw_wasm_exists(paths)?;
@@ -294,7 +294,11 @@ fn ensure_wasm_bindgen_cli(paths: &RepoPaths) -> Result<()> {
 fn install_wasm_bindgen_cli(paths: &RepoPaths) -> Result<()> {
     let sh = repo_shell(paths)?;
     let version = WASM_BINDGEN_VERSION;
-    cmd!(sh, "cargo install -f wasm-bindgen-cli --version {version}").run()?;
+    cargo_command(cmd!(
+        sh,
+        "cargo install -f wasm-bindgen-cli --version {version}"
+    ))
+    .run()?;
     Ok(())
 }
 
@@ -333,4 +337,22 @@ fn fallback_index_html() -> &'static str {
 </body>
 </html>
 "#
+}
+
+/// Remove inherited package metadata before xshell launches Cargo.
+fn cargo_command(mut command: xshell::Cmd<'_>) -> xshell::Cmd<'_> {
+    for (name, _) in env::vars_os() {
+        let Some(key) = name.to_str() else {
+            continue;
+        };
+        if key.starts_with("CARGO_PKG_")
+            || matches!(
+                key,
+                "CARGO_MANIFEST_DIR" | "CARGO_MANIFEST_PATH" | "CARGO_MANIFEST_LINKS"
+            )
+        {
+            command = command.env_remove(name);
+        }
+    }
+    command
 }
